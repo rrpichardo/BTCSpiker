@@ -1,0 +1,21 @@
+# Streaming
+websockets>=12.0
+confluent-kafka>=2.3.0
+
+# Data
+pandas>=2.0
+numpy
+pyarrow
+
+# ML & tracking
+scikit-learn>=1.4
+mlflow>=2.12
+
+# Drift / quality reporting
+evidently==0.4.33
+
+# Utilities
+pyyaml
+python-dotenv
+matplotlib
+seaborn

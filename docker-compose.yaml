@@ -1,0 +1,378 @@
+# =============================================================================
+# docker-compose.yaml — Canonical compose for BTCSpiker
+# =============================================================================
+#
+# This is the runtime entrypoint for the project.
+# Run from repo root:
+#   cp .env.example .env   # optional: override defaults
+#   docker compose up -d
+#
+# Services overview and healthcheck strategy
+# ------------------------------------------
+# kafka          — KRaft broker; healthcheck via kafka-broker-api-versions CLI
+# kafka-init     — One-shot topic creator; no healthcheck (exits 0 on success)
+# mlflow         — MLflow tracking UI; healthcheck via python urllib → /health
+# api            — FastAPI prediction service; healthcheck via python urllib → /health
+# ingestor       — Replay worker (loops raw_slice.ndjson → ticks.raw); no HTTP
+#                  endpoint, so no healthcheck — restart: on-failure is sufficient
+# ws-ingestor    — Live Coinbase WebSocket ingestor (profile: live only); same reasoning
+# featurizer     — Rolling-feature consumer (ticks.raw → ticks.features); same reasoning
+# predict-bridge — Runtime consumer (ticks.features → /predict); retries 5xx/network
+#                  failures and commits offsets only after the API hop succeeds
+# kafka-exporter — Prometheus exporter; built from scratch image, no shell/wget
+#                  available for CMD-style healthcheck — omitted intentionally
+# prometheus     — Metrics collector; healthcheck via wget → /-/healthy
+# grafana        — Dashboard; healthcheck via wget → /api/health (checks DB ready)
+#
+# Env vars are documented in .env.example. All defaults are set so the stack
+# runs out-of-the-box without a .env file present.
+# =============================================================================
+
+services:
+
+  # ---- Kafka (KRaft, no Zookeeper) ----
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ---- One-shot: create Kafka topics ----
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.raw      --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.features --partitions 1 --replication-factor 1
+      echo 'Topics created.'
+      "
+    restart: "no"
+
+  # ---- MLflow tracking server ----
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.2
+    ports:
+      - "5001:5000"
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlruns/mlflow_ui.db
+      --default-artifact-root /mlruns/artifacts
+      --host 0.0.0.0
+      --port 5000
+    volumes:
+      - mlflow-data:/mlruns
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+    # MLflow image ships with python; hit /health via urllib to avoid needing curl
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---- One-shot: register LR pipeline in MLflow and promote to Production ----
+  # Runs after mlflow is healthy; the api waits for this before starting so it
+  # can load the model directly from the registry on first boot.
+  mlflow-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    command: python scripts/log_model_to_mlflow.py
+    environment:
+      # Use internal Docker service name + container port (5000), not host port
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_NAME: ${MODEL_NAME:-btc-volatility-lr}
+      BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
+    volumes:
+      - ./handoff:/app/handoff:ro
+      - ./scripts:/app/scripts:ro
+      # Share the MLflow artifact volume. MLflow's file-based artifact store
+      # uploads by writing directly to the artifact URI on the client's own
+      # filesystem, not through the tracking server. Without this mount the
+      # uploaded artifacts land on mlflow-init's ephemeral layer and vanish
+      # when the one-shot container exits, even though the run is recorded.
+      - mlflow-data:/mlruns
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+        delay: 5s
+    restart: on-failure
+
+  # ---- FastAPI prediction service ----
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: models/artifacts/lr_pipeline.pkl
+      MODEL_VERSION: v1.0
+      MODEL_VARIANT: ${MODEL_VARIANT:-ml}
+      BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
+      # MLflow model registry — use internal Docker service name + container port
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_NAME: ${MODEL_NAME:-btc-volatility-lr}
+      MODEL_STAGE: ${MODEL_STAGE:-Production}
+    # Mount the shared MLflow artifact volume so the API can resolve
+    # `models:/...` URIs directly from /mlruns/artifacts on disk. Without this
+    # mount, the registry lookup still succeeds over REST but the artifact
+    # download fails and the loader silently falls back to the local pickle.
+    # Mounted read-write (not :ro) because mlflow 2.12's sklearn loader writes
+    # a `registered_model_meta` cache file into the artifact directory on load;
+    # a read-only mount causes an Errno 30 and the same silent pickle fallback.
+    volumes:
+      - mlflow-data:/mlruns
+    depends_on:
+      kafka:
+        condition: service_healthy
+      # Direct healthcheck dependency on mlflow — mlflow-init already gates on
+      # this transitively, but naming it here makes the contract explicit for
+      # anyone reading the compose file in isolation.
+      mlflow:
+        condition: service_healthy
+      mlflow-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: on-failure
+
+  # ---- Replay ingestor: NDJSON sample → Kafka ticks.raw ----
+  ingestor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_RAW: ticks.raw
+      REPLAY_SPEED: ${REPLAY_SPEED:-1.0}
+    volumes:
+      - ./handoff/data_sample:/app/data_sample:ro
+    command:
+      - python
+      - -u
+      - scripts/replay_to_kafka.py
+      - --file
+      - /app/data_sample/raw_slice.ndjson
+      - --loop
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    restart: on-failure
+
+  # ---- Live ingestor: Coinbase WebSocket → Kafka ticks.raw ----
+  # Opt-in via `docker compose --profile live up -d ws-ingestor`.
+  # Mutually exclusive with the replay `ingestor` service — both publish to
+  # ticks.raw, so run only one at a time.
+  ws-ingestor:
+    profiles: ["live"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_RAW: ticks.raw
+    command:
+      - python
+      - -u
+      - scripts/ws_ingest.py
+      - --pair
+      - BTC-USD
+      - --no-mirror
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    restart: on-failure
+
+  # ---- Featurizer: ticks.raw → ticks.features + Parquet ----
+  featurizer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+    volumes:
+      - ./data:/app/data
+    command:
+      - python
+      - -u
+      - features/featurizer.py
+      - --config
+      - /app/config.yaml
+      - --group-id
+      - ticks-featurizer
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+    restart: on-failure
+
+  # ---- Prediction bridge: ticks.features → /predict ----
+  predict-bridge:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_FEATURES: ticks.features
+      KAFKA_GROUP_ID: predict-bridge
+      PREDICT_API_URL: http://api:8000/predict
+      PREDICT_API_HEALTH_URL: http://api:8000/health
+    command:
+      - python
+      - -u
+      - scripts/feature_to_predict_bridge.py
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    restart: on-failure
+
+  # ---- Kafka exporter (consumer-group lag → Prometheus) ----
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    command: ["--kafka.server=kafka:29092"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+    restart: on-failure
+
+  # ---- Prometheus ----
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    # /-/healthy is Prometheus's built-in liveness endpoint; wget ships in the image
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: on-failure
+
+  # ---- Grafana ----
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    # /api/health returns JSON including "database": "ok" once Grafana is ready
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q '\"database\": \"ok\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: on-failure
+
+volumes:
+  kafka-data:
+  mlflow-data:
+  prometheus-data:
+  grafana-data:

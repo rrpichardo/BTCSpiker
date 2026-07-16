@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install linters
+        run: pip install black ruff
+
+      - name: Black (format check)
+        run: black --check api/ tests/
+
+      - name: Ruff (lint check)
+        run: ruff check api/ tests/
+
+  integration-replay:
+    needs: lint
+    runs-on: ubuntu-latest
+    # This job must pass before a PR can be merged — do not add continue-on-error
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Copy env file and set fast replay speed for CI
+        run: cp .env.example .env && echo "REPLAY_SPEED=50" >> .env
+
+      - name: Start full stack
+        run: docker compose up -d --build
+
+      - name: Wait for stack to be healthy
+        run: |
+          for i in {1..60}; do
+            if curl -sf http://localhost:8000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          exit 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run replay integration test
+        run: pytest tests/test_replay_integration.py -v --tb=short --retries 2
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs > docker-compose-failure.log
+
+      - name: Upload logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-logs
+          path: docker-compose-failure.log
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v

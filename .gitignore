@@ -1,0 +1,26 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+*.pyc
+*.pyo
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Data (too large for git)
+data/
+
+# MLflow local runs
+mlruns/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local state (agent worktrees, session data) — ephemeral tooling, not project code
+.claude/
