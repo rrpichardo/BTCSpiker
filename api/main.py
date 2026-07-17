@@ -36,6 +36,9 @@ from prometheus_client import (
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
+from api.settings_view import router as settings_router
+from api.system import router as system_router
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -261,6 +264,8 @@ SCORERS = {"ml": _score_ml, "baseline": _score_baseline}
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="BTC Volatility Spike Detector")
+app.include_router(settings_router)
+app.include_router(system_router)
 
 
 @app.get("/health")
