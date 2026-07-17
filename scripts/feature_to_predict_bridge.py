@@ -10,6 +10,7 @@ Usage:
 
 import json
 import logging
+import math
 import os
 import signal
 import time
@@ -126,8 +127,26 @@ def _post_prediction(row: dict) -> tuple[bool, str, dict | None]:
                 body = resp.read().decode("utf-8")
                 try:
                     response_payload = json.loads(body)
-                    _ = response_payload["scores"][0]
-                except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+                    if not isinstance(response_payload, dict):
+                        raise ValueError("body must be a mapping")
+
+                    scores = response_payload.get("scores")
+                    if not isinstance(scores, list) or len(scores) != 1:
+                        raise ValueError("scores must contain exactly one value")
+
+                    score = scores[0]
+                    if (
+                        isinstance(score, bool)
+                        or not isinstance(score, (int, float))
+                        or not math.isfinite(score)
+                    ):
+                        raise ValueError("score must be a finite number")
+
+                    for field in ("ts", "model_variant", "version"):
+                        value = response_payload.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            raise ValueError(f"{field} must be a nonempty string")
+                except (json.JSONDecodeError, ValueError) as exc:
                     return False, f"malformed API response: {exc}", None
                 return True, "", response_payload
             return False, f"unexpected status {resp.status}", None
@@ -140,7 +159,13 @@ def _post_prediction(row: dict) -> tuple[bool, str, dict | None]:
         return False, f"API request failed: {exc}", None
 
 
-def _build_prediction_event(msg: Message, row: dict, response_payload: dict) -> dict:
+def _build_prediction_event(
+    msg: Message,
+    row: dict,
+    response_payload: dict,
+    *,
+    feature_ts: str | None,
+) -> dict:
     """Assemble the PredictionEvent for the consumed features message.
 
     event_id is derived from the consumed message's own topic/partition/offset
@@ -150,7 +175,7 @@ def _build_prediction_event(msg: Message, row: dict, response_payload: dict) -> 
         "event_id": f"{msg.topic()}:{msg.partition()}:{msg.offset()}",
         "source_partition": msg.partition(),
         "source_offset": msg.offset(),
-        "feature_ts": row.get("ts"),
+        "feature_ts": feature_ts,
         "api_ts": response_payload.get("ts"),
         "score": response_payload["scores"][0],
         "model_variant": response_payload.get("model_variant"),
@@ -242,10 +267,16 @@ def main() -> None:
                 consumer.commit(message=msg)
                 continue
 
-            success, detail, response_payload = _post_prediction(row)
-            if not success:
-                log.warning("Prediction POST failed; retrying after backoff: %s", detail)
+            while not stop:
+                success, detail, response_payload = _post_prediction(row)
+                if success:
+                    break
+                log.warning(
+                    "Prediction POST failed; retrying after backoff: %s", detail
+                )
                 time.sleep(RETRY_BACKOFF)
+
+            if stop:
                 continue
 
             if response_payload is None:
@@ -255,13 +286,20 @@ def main() -> None:
                 log.warning("Prediction row skipped after client error: %s", detail)
                 continue
 
-            event = _build_prediction_event(msg, row, response_payload)
-            if not _publish_prediction(producer, event):
+            event = _build_prediction_event(
+                msg,
+                row,
+                response_payload,
+                feature_ts=feature_message.get("timestamp"),
+            )
+            while not stop and not _publish_prediction(producer, event):
                 log.warning(
                     "Prediction event publish unconfirmed; retrying after backoff: %s",
                     event["event_id"],
                 )
                 time.sleep(RETRY_BACKOFF)
+
+            if stop:
                 continue
 
             consumer.commit(message=msg)
