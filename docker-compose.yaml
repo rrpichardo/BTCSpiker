@@ -71,8 +71,9 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: |
       "
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.raw      --partitions 1 --replication-factor 1
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.features --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.raw         --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.features    --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.predictions --partitions 1 --replication-factor 1
       echo 'Topics created.'
       "
     restart: "no"
@@ -291,6 +292,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
       TOPIC_FEATURES: ticks.features
+      TOPIC_PREDICTIONS: ticks.predictions
       KAFKA_GROUP_ID: predict-bridge
       PREDICT_API_URL: http://api:8000/predict
       PREDICT_API_HEALTH_URL: http://api:8000/health
