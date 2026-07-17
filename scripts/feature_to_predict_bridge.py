@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from numbers import Real
 
 from confluent_kafka import Consumer, KafkaError, Message, Producer
 
@@ -137,8 +138,8 @@ def _post_prediction(row: dict) -> tuple[bool, str, dict | None]:
                     score = scores[0]
                     if (
                         isinstance(score, bool)
-                        or not isinstance(score, (int, float))
-                        or not math.isfinite(score)
+                        or not isinstance(score, Real)
+                        or (isinstance(score, float) and not math.isfinite(score))
                     ):
                         raise ValueError("score must be a finite number")
 

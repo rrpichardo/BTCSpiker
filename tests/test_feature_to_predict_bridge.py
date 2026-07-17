@@ -23,6 +23,21 @@ VALID_RESPONSE = {
     "ts": "2026-07-16T19:00:01+00:00",
 }
 
+EXPECTED_EVENT = {
+    "event_id": "ticks.features:2:41",
+    "source_partition": 2,
+    "source_offset": 41,
+    "feature_ts": "2026-07-16T19:00:00Z",
+    "api_ts": "2026-07-16T19:00:01+00:00",
+    "score": 0.75,
+    "model_variant": "ml",
+    "model_version": "v1.0",
+    "vol_60s": 0.02,
+    "spread_bps": 2.5,
+    "log_return": 0.001,
+    "trade_intensity_60s": 3.0,
+}
+
 
 class FakeResponse:
     status = 200
@@ -74,20 +89,35 @@ def test_prediction_event_uses_original_feature_timestamp_and_exact_contract():
         feature_ts=FEATURE_MESSAGE["timestamp"],
     )
 
-    assert event == {
-        "event_id": "ticks.features:2:41",
-        "source_partition": 2,
-        "source_offset": 41,
-        "feature_ts": "2026-07-16T19:00:00Z",
-        "api_ts": "2026-07-16T19:00:01+00:00",
-        "score": 0.75,
-        "model_variant": "ml",
-        "model_version": "v1.0",
-        "vol_60s": 0.02,
-        "spread_bps": 2.5,
-        "log_return": 0.001,
-        "trade_intensity_60s": 3.0,
-    }
+    assert event == EXPECTED_EVENT
+
+
+def test_publish_prediction_uses_event_id_key_and_exact_payload():
+    class FakeProducer:
+        def __init__(self):
+            self.produced = []
+
+        def produce(self, topic, *, key, value, callback):
+            self.produced.append((topic, key, value))
+            callback(None, object())
+
+        def poll(self, timeout):
+            assert timeout == 0
+
+        def flush(self, timeout):
+            assert timeout == bridge.API_TIMEOUT
+            return 0
+
+    producer = FakeProducer()
+
+    assert bridge._publish_prediction(producer, EXPECTED_EVENT) is True
+    assert producer.produced == [
+        (
+            "ticks.predictions",
+            "ticks.features:2:41",
+            json.dumps(EXPECTED_EVENT).encode("utf-8"),
+        )
+    ]
 
 
 def test_post_prediction_accepts_complete_single_score_response(monkeypatch):
