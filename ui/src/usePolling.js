@@ -6,6 +6,9 @@ export function usePolling(fetchFn, intervalMs) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isPaused, setIsPaused] = useState(document.visibilityState === "hidden");
 
   // Ref so the effect below doesn't need to restart if the caller passes a
   // fresh fetchFn closure every render.
@@ -14,55 +17,92 @@ export function usePolling(fetchFn, intervalMs) {
 
   useEffect(() => {
     let cancelled = false;
-    let intervalId = null;
+    let timeoutId = null;
     let controller = null;
+    let generation = 0;
+
+    function clearScheduledTick() {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    }
+
+    function scheduleNextTick() {
+      clearScheduledTick();
+      if (!cancelled && document.visibilityState !== "hidden") {
+        timeoutId = setTimeout(tick, intervalMs);
+      }
+    }
 
     async function tick() {
-      controller = new AbortController();
+      if (cancelled || document.visibilityState === "hidden") return;
+
+      const requestGeneration = ++generation;
+      const requestController = new AbortController();
+      controller = requestController;
+      setIsRefreshing(true);
+
       try {
-        const result = await fetchFnRef.current(controller.signal);
-        if (cancelled) return; // ignore stale response after unmount
+        const result = await fetchFnRef.current(requestController.signal);
+        if (cancelled || requestGeneration !== generation) return;
         setData(result);
         setError(null);
         setLastUpdated(new Date());
       } catch (err) {
-        if (cancelled || err.name === "AbortError") return;
+        if (
+          cancelled ||
+          requestGeneration !== generation ||
+          err.name === "AbortError"
+        ) {
+          return;
+        }
         setError(err);
-      }
-    }
-
-    function startInterval() {
-      if (intervalId !== null) return;
-      intervalId = setInterval(tick, intervalMs);
-    }
-
-    function stopInterval() {
-      if (intervalId !== null) {
-        clearInterval(intervalId);
-        intervalId = null;
+      } finally {
+        if (cancelled || requestGeneration !== generation) return;
+        controller = null;
+        setIsLoading(false);
+        setIsRefreshing(false);
+        scheduleNextTick();
       }
     }
 
     function handleVisibilityChange() {
       if (document.visibilityState === "hidden") {
-        stopInterval();
+        generation += 1;
+        clearScheduledTick();
+        controller?.abort();
+        controller = null;
+        setIsPaused(true);
+        setIsRefreshing(false);
       } else {
+        setIsPaused(false);
         tick();
-        startInterval();
       }
     }
 
-    tick();
-    startInterval();
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (document.visibilityState === "hidden") {
+      setIsPaused(true);
+    } else {
+      tick();
+    }
 
     return () => {
       cancelled = true;
-      stopInterval();
-      if (controller) controller.abort();
+      generation += 1;
+      clearScheduledTick();
+      controller?.abort();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [intervalMs]);
 
-  return { data, error, lastUpdated };
+  return {
+    data,
+    error,
+    lastUpdated,
+    isLoading,
+    isRefreshing,
+    isPaused,
+  };
 }

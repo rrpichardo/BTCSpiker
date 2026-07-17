@@ -1,21 +1,22 @@
-function statusInfo(service) {
+function statusInfo(service, stale) {
+  if (stale) return { label: "stale", className: "pill-amber" };
   if (!service.ok) return { label: "down", className: "pill-red" };
   if (service.degraded) return { label: "degraded", className: "pill-amber" };
   return { label: "ok", className: "pill-green" };
 }
 
-export default function StatusCard({ service }) {
-  const status = statusInfo(service);
+export default function StatusCard({ service, stale = false }) {
+  const status = statusInfo(service, stale);
 
   return (
-    <div className="status-card">
+    <article className={`status-card ${stale ? "status-card-stale" : ""}`}>
       <div className="status-card-header">
         <span className="status-card-name">{service.name}</span>
         <span className={`pill ${status.className}`}>{status.label}</span>
       </div>
       <div className="status-card-body">
         <div className="status-card-row">
-          <span className="status-card-label">latency</span>
+          <span className="status-card-label">Latency</span>
           <span>{typeof service.latency_ms === "number" ? `${service.latency_ms.toFixed(1)} ms` : "-"}</span>
         </div>
         {service.detail && <p className="status-card-detail">{service.detail}</p>}
@@ -27,9 +28,9 @@ export default function StatusCard({ service }) {
           target="_blank"
           rel="noopener noreferrer"
         >
-          Open &rarr;
+          Open {service.name} <span aria-hidden="true">↗</span>
         </a>
       )}
-    </div>
+    </article>
   );
 }

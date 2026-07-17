@@ -1,30 +1,53 @@
 import { usePolling } from "../usePolling.js";
 import { fetchSettings } from "../api.js";
 import SettingRow from "../components/SettingRow.jsx";
+import { formatAge } from "../format.js";
 
 export default function SettingsPage() {
-  const { data, error } = usePolling(fetchSettings, 10000);
+  const { data, error, lastUpdated, isLoading, isRefreshing } = usePolling(
+    fetchSettings,
+    10000,
+  );
   const settings = data?.settings ?? [];
+  const hasResponse = data !== null;
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h2>Settings</h2>
+    <section className="page" id="settings-page" aria-labelledby="settings-heading">
+      <div className="page-header page-header-split">
+        <div>
+          <p className="eyebrow">Read-only control map</p>
+          <h2 id="settings-heading">Settings</h2>
+        </div>
+        <p className="page-header-note page-header-freshness">
+          {formatAge(lastUpdated)}{isRefreshing ? " · refreshing" : ""}
+        </p>
+      </div>
+      <div className="settings-intro">
         <p className="page-header-note">
-          Settings are read-only here. To change a value, run the command
-          shown for that setting on the host, then restart the affected
-          service if indicated.
+          Compare values saved on disk with the configuration active in the running
+          pipeline. Apply changes on the host using the command shown for each setting.
         </p>
       </div>
 
-      {error && <p className="error-text">Failed to load settings: {error.message}</p>}
+      {isLoading && !hasResponse && (
+        <p className="state-message" role="status" aria-live="polite">Loading settings…</p>
+      )}
+      {error && (
+        <p className="stale-banner" role="alert">
+          {hasResponse
+            ? `Settings refresh failed. Showing cached values; ${formatAge(lastUpdated).toLowerCase()}.`
+            : "Settings are unavailable. Check the API service and retry."}
+        </p>
+      )}
 
       <div className="settings-list">
         {settings.map((s) => (
           <SettingRow key={s.key} setting={s} />
         ))}
-        {settings.length === 0 && !error && <p className="empty-cell">No settings found.</p>}
+        {hasResponse && settings.length === 0 && !error && (
+          <p className="state-message">Connected successfully; no settings were reported.</p>
+        )}
       </div>
-    </div>
+    </section>
   );
 }
