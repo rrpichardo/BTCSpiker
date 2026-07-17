@@ -4,7 +4,7 @@
 Produce a repo-specific, reviewable plan for using Codex `/goal` to maximize out-of-sample BTC prediction quality through disciplined feature, model, and ensemble experimentation logged in MLflow.
 
 ## Current Phase
-Phase 5
+Phase 6
 
 ## Phases
 
@@ -37,6 +37,16 @@ Phase 5
 - [x] Prepare the plan handoff and `/goal` instructions
 - **Status:** complete
 
+### Phase 6: Separate Data Gathering and Run the Full Existing-Data Goal
+- [x] Confirm that data gathering is independent from experimentation
+- [x] Confirm that synthetic market data is prohibited
+- [x] Confirm that the full `/goal` framework and tournament run on already-collected data
+- [x] Revise the design specification around a provider-neutral existing-data boundary
+- [x] Remove acquisition, collection, cloud-storage, and data-wait tasks from the experimentation plan
+- [x] Create a separate deferred data-gathering plan
+- [x] Self-review, verify, and commit the revised documents
+- **Status:** complete
+
 ## Key Questions
 1. What exact BTC outcome and prediction horizon is the primary target? **Answered: keep the existing 60-second binary volatility-spike target.**
 2. What metric and validation protocol should determine whether an experiment is genuinely better?
@@ -54,6 +64,9 @@ Phase 5
 | Treat MLflow as the experiment system of record | The user explicitly wants every feature/model trial visible and comparable. |
 | Keep the existing 60-second binary target as the primary objective | The user confirmed this explicitly; it preserves comparability with the shipped baseline and model. |
 | Allow durable storage outside the repository | The user confirmed that additional datasets and artifacts may be stored with a cloud provider. |
+| Run the complete experimentation goal on already-collected data | The user explicitly rejected waiting for the future data plan and rejected synthetic market data. |
+| Keep future data gathering in a separate plan | Source and storage decisions must not block, pause, or change the current experimentation goal. |
+| Finish with a provisional result when qualification data is insufficient | The full goal still executes; insufficient coverage changes promotion eligibility and reporting language, not completion. |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

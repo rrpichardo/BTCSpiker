@@ -2,20 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and run a reproducible, MLflow-tracked experimentation system that searches broadly for a stronger out-of-sample predictor of BTCSpiker's existing 60-second Coinbase BTC-USD volatility-spike target and registers only fully qualified, deployable candidates as Staging.
+**Goal:** Build and run a reproducible, MLflow-tracked experimentation system against the user's already-collected data, search broadly for a stronger out-of-sample predictor of BTCSpiker's existing 60-second Coinbase BTC-USD volatility-spike target, and register only fully qualified, deployable candidates as Staging.
 
-**Architecture:** Store immutable raw and curated Parquet partitions plus completed-run exports in iCloud, while keeping the active cache and MLflow SQLite volume local. A single causal feature engine feeds batch, replay, and streaming paths; five-fold purged walk-forward validation drives a progressive model tournament, with an untouched final holdout and explicit Staging gates.
+**Architecture:** Resolve one already-collected corpus through a provider-neutral dataset adapter, checksum it into an immutable manifest, and keep active artifacts and MLflow state local. A single causal feature engine feeds batch, replay, and streaming paths; purged temporal validation drives a complete progressive model tournament, with an untouched final holdout and explicit Staging gates. Data gathering is implemented only by the separate `docs/superpowers/plans/2026-07-16-btcspiker-data-gathering.md` plan and never blocks or pauses this goal.
 
-**Tech Stack:** Python 3.11+, pandas, NumPy, PyArrow, scikit-learn, Optuna, LightGBM, XGBoost, CatBoost, MLflow 2.12.x, pytest, Docker Compose, Coinbase Exchange/Advanced Trade public market data, Binance public-data archives, iCloud Drive.
+**Tech Stack:** Python 3.11+, pandas, NumPy, PyArrow, scikit-learn, Optuna, LightGBM, XGBoost, CatBoost, MLflow 2.12.x, pytest, Docker Compose, and the existing BTCSpiker raw/feature corpus.
 
 ## Global Constraints
 
 - Keep the primary target at a 60-second horizon and threshold `0.000048`.
 - Version the operational target as trade-price realized volatility, matching `features/featurizer.py`; do not silently switch it to midprice.
 - Use only information available at or before each prediction timestamp.
-- Use free public data and local M3 Pro compute only; no paid APIs or paid cloud compute.
+- Use only the user's already-collected market data and local M3 Pro compute; do not generate synthetic market observations, download market data, or start a collector from this plan.
 - Limit each major model-search cycle to 24 hours and bound parallel work to avoid exhausting 18 GB RAM.
-- Keep the active MLflow SQLite database and Docker volume local; export completed artifacts to iCloud.
+- Keep the active MLflow SQLite database, Docker volume, curated data, and completed-run exports local. Remote synchronization is outside this plan.
 - Default local cache ceiling is 4 GiB because only about 10 GiB was free during planning.
 - Use five expanding walk-forward folds, a 20% untouched final holdout, and an embargo of `max_feature_lookback + 60 seconds`.
 - Primary metric is PR-AUC; always log prevalence lift, calibration, event metrics, regime metrics, and latency.
@@ -29,13 +29,12 @@
 ### New files
 
 - `requirements-ml.txt` — research-only dependency set, separate from API/worker images.
-- `experiment.yaml` — immutable defaults for storage, target, splits, metrics, search budgets, and model stages.
+- `experiment.yaml` — immutable defaults for the existing-data path, local artifacts, target, splits, metrics, search budgets, and model stages.
 - `btcspiker_ml/__init__.py` — package marker and version.
 - `btcspiker_ml/config.py` — typed experiment configuration loader.
-- `btcspiker_ml/storage.py` — local cache, atomic iCloud publication, checksums, and capacity checks.
+- `btcspiker_ml/storage.py` — local cache, atomic local publication, checksums, and capacity checks.
 - `btcspiker_ml/manifest.py` — dataset and feature manifests with stable IDs.
-- `btcspiker_ml/sources/coinbase.py` — Coinbase paginated trade backfill normalization.
-- `btcspiker_ml/sources/binance.py` — official archive URL construction and checksum verification.
+- `btcspiker_ml/datasets.py` — resolve, inspect, and bind the already-collected corpus without downloading or generating rows.
 - `btcspiker_ml/eda.py` — target audit, data quality, temporal EDA, and report artifacts.
 - `btcspiker_ml/features.py` — shared causal feature engine and versioned feature-set registry.
 - `btcspiker_ml/splits.py` — untouched holdout and purged walk-forward folds.
@@ -44,8 +43,8 @@
 - `btcspiker_ml/tracking.py` — required MLflow tags, parameters, metrics, and artifacts.
 - `btcspiker_ml/search.py` — staged tournament orchestration and resume state.
 - `btcspiker_ml/qualification.py` — exact Staging gates and reason codes.
-- `btcspiker_ml/export.py` — completed-run export and checksum index for iCloud.
-- `scripts/collect_dataset.py` — backfill/live-compaction CLI.
+- `btcspiker_ml/export.py` — completed-run local export and checksum index.
+- `scripts/bind_existing_dataset.py` — existing-corpus resolver and manifest CLI.
 - `scripts/profile_dataset.py` — EDA and target-audit CLI.
 - `scripts/run_experiments.py` — model-tournament CLI.
 - `scripts/qualify_candidate.py` — final-holdout, replay, latency, Staging, and export CLI.
@@ -55,7 +54,6 @@
 ### Existing files to modify
 
 - `.gitignore` — ignore local cache, run state, and generated datasets without ignoring manifests or reports.
-- `scripts/ws_ingest.py` — capture bid/ask quantities and stage larger local segments for hourly Parquet compaction.
 - `features/featurizer.py` — consume the shared feature engine and emit feature-schema metadata.
 - `scripts/replay.py` — consume the same shared feature engine.
 - `scripts/feature_to_predict_bridge.py` — forward the versioned deployable payload instead of seven hardcoded fields.
@@ -63,7 +61,7 @@
 - `scripts/log_model_to_mlflow.py` — keep legacy bootstrap but remove candidate auto-promotion responsibilities.
 - `docker-compose.yaml` — expose candidate model name/stage configuration without changing the default Production model.
 - `handoff/docs/feature_spec.md` — correct the target's trade-price wording and document schema versions.
-- `README.md`, `docs/runbook.md`, `docs/results.md` — add experiment, MLflow, iCloud, Staging, resume, and rollback instructions.
+- `README.md`, `docs/runbook.md`, `docs/results.md` — add existing-data, experiment, MLflow, Staging, resume, and rollback instructions.
 
 ---
 
@@ -99,6 +97,7 @@ def test_loads_frozen_target_and_validation_contract():
     assert cfg.validation.max_feature_lookback_seconds == 300
     assert cfg.search.max_hours == 24
     assert cfg.storage.local_cache_max_gib == 4
+    assert cfg.storage.existing_data == Path("data/processed/features.parquet")
 ```
 
 - [ ] **Step 2: Run the test and confirm the missing package failure**
@@ -112,7 +111,6 @@ Expected: collection fails with `ModuleNotFoundError: No module named 'btcspiker
 ```text
 # requirements-ml.txt
 -r handoff/requirements.txt
-httpx>=0.27,<1
 optuna>=3.6,<5
 scipy>=1.11,<2
 psutil>=5.9,<8
@@ -124,7 +122,8 @@ catboost>=1.2,<2
 ```yaml
 # experiment.yaml
 storage:
-  cloud_root: "~/Library/Mobile Documents/com~apple~CloudDocs/BTCSpiker"
+  existing_data: "data/processed/features.parquet"
+  artifact_root: ".artifacts/btcspiker"
   local_cache: ".cache/btcspiker"
   local_cache_max_gib: 4
 target:
@@ -161,7 +160,8 @@ import yaml
 
 @dataclass(frozen=True)
 class StorageConfig:
-    cloud_root: Path
+    existing_data: Path
+    artifact_root: Path
     local_cache: Path
     local_cache_max_gib: int
 
@@ -210,7 +210,8 @@ class ExperimentConfig:
 def load_experiment_config(path: Path) -> ExperimentConfig:
     raw = yaml.safe_load(path.read_text())
     storage = dict(raw["storage"])
-    storage["cloud_root"] = Path(storage["cloud_root"]).expanduser()
+    storage["existing_data"] = Path(storage["existing_data"]).expanduser()
+    storage["artifact_root"] = Path(storage["artifact_root"]).expanduser()
     storage["local_cache"] = Path(storage["local_cache"]).expanduser()
     return ExperimentConfig(
         storage=StorageConfig(**storage),
@@ -221,7 +222,7 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
     )
 ```
 
-Add `.cache/btcspiker/` and `.experiment-state/` to `.gitignore`; keep `reports/` trackable.
+Add `.cache/btcspiker/`, `.artifacts/btcspiker/`, and `.experiment-state/` to `.gitignore`; keep `reports/` trackable.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -236,7 +237,7 @@ git commit -m "feat: freeze ML experiment contract"
 
 ---
 
-### Task 2: Add immutable manifests and safe iCloud publication
+### Task 2: Add immutable manifests and safe local publication
 
 **Files:**
 - Create: `btcspiker_ml/manifest.py`
@@ -266,7 +267,7 @@ def test_manifest_id_ignores_dictionary_order():
 def test_atomic_publish_verifies_bytes(tmp_path: Path):
     source = tmp_path / "source.parquet"
     source.write_bytes(b"verified")
-    result = atomic_publish(source, tmp_path / "cloud" / "part.parquet")
+    result = atomic_publish(source, tmp_path / "artifacts" / "part.parquet")
     assert result.sha256 == sha256_file(result.path)
     assert result.path.read_bytes() == b"verified"
 ```
@@ -368,144 +369,123 @@ Expected: all tests pass, including a monkeypatched `shutil.disk_usage` case tha
 
 ```bash
 git add btcspiker_ml/manifest.py btcspiker_ml/storage.py tests/ml/test_manifest.py tests/ml/test_storage.py
-git commit -m "feat: add immutable dataset publication"
+git commit -m "feat: add immutable local dataset publication"
 ```
 
 ---
 
-### Task 3: Acquire target-aligned Coinbase data and external Binance context
+### Task 3: Bind and audit the existing collected corpus
 
 **Files:**
-- Create: `btcspiker_ml/sources/__init__.py`
-- Create: `btcspiker_ml/sources/coinbase.py`
-- Create: `btcspiker_ml/sources/binance.py`
-- Create: `scripts/collect_dataset.py`
-- Create: `tests/ml/test_coinbase_source.py`
-- Create: `tests/ml/test_binance_source.py`
-- Modify: `scripts/ws_ingest.py:95-133,223-325`
+- Create: `btcspiker_ml/datasets.py`
+- Create: `scripts/bind_existing_dataset.py`
+- Create: `tests/ml/test_datasets.py`
+- Use read-only: `handoff/data_sample/features_slice.parquet`
+- Use when present: `data/processed/features.parquet`
 
 **Interfaces:**
-- Produces: `iter_coinbase_trades(session, product, max_pages) -> Iterator[dict]`, `binance_archive_url(market, kind, symbol, date) -> str`, `compact_segments(inputs, output) -> DatasetManifest`.
-- Consumes: `atomic_publish`, `DatasetManifest`, and Task 1 storage paths.
+- Produces: `resolve_existing_dataset(configured: Path | None) -> Path`, `inspect_existing_dataset(path: Path) -> ExistingDataset`, `publish_existing_manifest(dataset: ExistingDataset, artifact_root: Path) -> tuple[str, Path]`.
+- Consumes: `atomic_publish`, `sha256_file`, `DatasetManifest`, and Task 1 storage paths.
 
-- [ ] **Step 1: Write mocked source tests**
-
-```python
-from datetime import date
-
-from btcspiker_ml.sources.binance import binance_archive_url
-from btcspiker_ml.sources.coinbase import normalize_trade
-
-
-def test_coinbase_trade_normalization():
-    row = normalize_trade({"trade_id": 7, "time": "2026-01-01T00:00:00Z", "price": "90000", "size": "0.1", "side": "sell"})
-    assert row == {"source": "coinbase", "product_id": "BTC-USD", "trade_id": 7, "timestamp": "2026-01-01T00:00:00Z", "price": 90000.0, "size": 0.1, "maker_side": "sell"}
-
-
-def test_official_binance_daily_url():
-    assert binance_archive_url("spot", "aggTrades", "BTCUSDT", date(2026, 1, 2)) == "https://data.binance.vision/data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2026-01-02.zip"
-```
-
-- [ ] **Step 2: Run tests and verify missing modules**
-
-Run: `pytest tests/ml/test_coinbase_source.py tests/ml/test_binance_source.py -q`
-
-Expected: import failures for both source adapters.
-
-- [ ] **Step 3: Implement exact public-source adapters**
+- [ ] **Step 1: Write resolver and no-synthetic-data tests**
 
 ```python
-# btcspiker_ml/sources/coinbase.py
-from collections.abc import Iterator
+from pathlib import Path
 
-import httpx
+import pytest
 
-
-BASE_URL = "https://api.exchange.coinbase.com"
+from btcspiker_ml.datasets import inspect_existing_dataset, resolve_existing_dataset
 
 
-def normalize_trade(raw: dict, product: str = "BTC-USD") -> dict:
-    return {
-        "source": "coinbase",
-        "product_id": product,
-        "trade_id": int(raw["trade_id"]),
-        "timestamp": raw["time"],
-        "price": float(raw["price"]),
-        "size": float(raw["size"]),
-        "maker_side": raw["side"],
-    }
+def test_explicit_existing_dataset_wins(tmp_path: Path, monkeypatch):
+    supplied = tmp_path / "collected.parquet"
+    supplied.write_bytes(b"collected")
+    monkeypatch.setenv("BTCSPIKER_EXISTING_DATA", str(supplied))
+    assert resolve_existing_dataset(None) == supplied.resolve()
 
 
-def iter_coinbase_trades(client: httpx.Client, product: str, max_pages: int) -> Iterator[dict]:
-    cursor = None
-    seen: set[int] = set()
-    for _page in range(max_pages):
-        params = {"limit": 1000}
-        if cursor is not None:
-            params["after"] = cursor
-        response = client.get(f"{BASE_URL}/products/{product}/trades", params=params)
-        response.raise_for_status()
-        rows = response.json()
-        if not rows:
-            return
-        for raw in rows:
-            row = normalize_trade(raw, product)
-            if row["trade_id"] not in seen:
-                seen.add(row["trade_id"])
-                yield row
-        next_cursor = response.headers.get("CB-AFTER")
-        if next_cursor is None or next_cursor == cursor:
-            return
-        cursor = next_cursor
+def test_resolver_fails_instead_of_generating_data(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("BTCSPIKER_EXISTING_DATA", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="existing collected dataset"):
+        resolve_existing_dataset(None)
+
+
+def test_inspection_rejects_unlabelled_or_empty_data(tmp_path: Path):
+    path = tmp_path / "empty.parquet"
+    path.write_bytes(b"")
+    with pytest.raises(ValueError):
+        inspect_existing_dataset(path)
 ```
+
+- [ ] **Step 2: Run tests and verify the missing-module failure**
+
+Run: `pytest tests/ml/test_datasets.py -q`
+
+Expected: collection fails with `ModuleNotFoundError: No module named 'btcspiker_ml.datasets'`.
+
+- [ ] **Step 3: Implement deterministic existing-data resolution**
 
 ```python
-# btcspiker_ml/sources/binance.py
-from datetime import date
+# btcspiker_ml/datasets.py
+from dataclasses import dataclass
+import os
+from pathlib import Path
+
+import pandas as pd
 
 
-def binance_archive_url(market: str, kind: str, symbol: str, day: date) -> str:
-    stamp = day.isoformat()
-    return f"https://data.binance.vision/data/{market}/daily/{kind}/{symbol}/{symbol}-{kind}-{stamp}.zip"
+REQUIRED_FEATURE_COLUMNS = {
+    "timestamp", "log_return", "spread_bps", "vol_60s",
+    "mean_return_60s", "trade_intensity_60s", "n_ticks_60s",
+    "spread_mean_60s", "vol_spike",
+}
 
 
-def checksum_url(archive_url: str) -> str:
-    return f"{archive_url}.CHECKSUM"
+@dataclass(frozen=True)
+class ExistingDataset:
+    path: Path
+    rows: int
+    start_time: str
+    end_time: str
+    columns: tuple[str, ...]
+    sha256: str
+
+
+def resolve_existing_dataset(configured: Path | None) -> Path:
+    candidates = [
+        Path(os.environ["BTCSPIKER_EXISTING_DATA"]) if os.environ.get("BTCSPIKER_EXISTING_DATA") else None,
+        configured,
+        Path("data/processed/features.parquet"),
+        Path("handoff/data_sample/features_slice.parquet"),
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.expanduser().is_file():
+            return candidate.expanduser().resolve()
+    raise FileNotFoundError("existing collected dataset not found; set BTCSPIKER_EXISTING_DATA")
 ```
 
-- [ ] **Step 4: Extend live capture fields and compaction behavior**
+`inspect_existing_dataset` reads Parquet metadata and only the timestamp, target, and required feature columns; rejects empty files, duplicate column names, missing target/features, non-UTC or non-monotonic timestamps, and non-binary targets; and computes a SHA-256 without mutating the source. `publish_existing_manifest` records the absolute source path, checksum, schema, rows, event-time range, duration, prevalence, null counts, duplicate timestamps, and `input_mode="existing_collected"`.
 
-In `scripts/ws_ingest.py`, add `best_bid_quantity`, `best_ask_quantity`, `price_percent_chg_24_h`, `source="coinbase"`, `channel="ticker"`, and `sequence_num` to every mirrored payload. Change `MIRROR_FLUSH_SIZE` from `100` to `10000`, write only to local `.cache/btcspiker/capture/`, and make `scripts/collect_dataset.py compact` convert closed NDJSON segments into hourly Zstandard-compressed Parquet before calling `atomic_publish`.
+- [ ] **Step 4: Bind the collected corpus and record the exact input**
 
-The compacted schema is exactly:
-
-```python
-RAW_TICK_COLUMNS = [
-    "source", "channel", "product_id", "timestamp", "sequence_num",
-    "price", "best_bid", "best_ask", "best_bid_quantity",
-    "best_ask_quantity", "volume_24_h", "price_percent_chg_24_h",
-]
-```
-
-- [ ] **Step 5: Test mocked pagination, checksum rejection, and compaction**
-
-Run: `pytest tests/ml/test_coinbase_source.py tests/ml/test_binance_source.py -q`
-
-Expected: tests prove cursor progression, duplicate trade suppression, exact archive URLs, checksum mismatch rejection, and one immutable Parquet output per hour.
-
-- [ ] **Step 6: Run a bounded live smoke test and commit**
-
-Run: `python scripts/ws_ingest.py --pair BTC-USD --minutes 1`
-
-Expected: local capture contains bid/ask quantities and no file is written directly into iCloud.
-
-Run: `python scripts/collect_dataset.py compact --config experiment.yaml`
-
-Expected: an hourly Parquet partition, manifest, and verified iCloud copy are printed.
+Run:
 
 ```bash
-git add btcspiker_ml/sources scripts/collect_dataset.py scripts/ws_ingest.py tests/ml/test_coinbase_source.py tests/ml/test_binance_source.py
-git commit -m "feat: collect versioned market data"
+python scripts/bind_existing_dataset.py --config experiment.yaml
+```
+
+Expected: prints `dataset_id`, absolute source path, SHA-256, rows, event-time range, duration, and manifest path. It makes no network request, starts no collector, and creates no market observations.
+
+- [ ] **Step 5: Test against the checked-in collected sample and commit**
+
+Run: `pytest tests/ml/test_datasets.py -q`
+
+Expected: all tests pass and the checked-in `handoff/data_sample/features_slice.parquet` resolves as the fallback existing corpus.
+
+```bash
+git add btcspiker_ml/datasets.py scripts/bind_existing_dataset.py tests/ml/test_datasets.py
+git commit -m "feat: bind existing collected experiment data"
 ```
 
 ---
@@ -585,11 +565,11 @@ Extend the report layer with source coverage, duplicate event IDs, gaps by durat
 
 Use the operational target name `trade_price_future_vol_spike_60s_v1`. Update `handoff/docs/feature_spec.md` to state that v1 uses last-trade `price`, not midprice, because that is what the current code and artifact use.
 
-- [ ] **Step 3: Verify EDA on the handoff sample without making quality claims**
+- [ ] **Step 3: Verify EDA on the resolved collected corpus**
 
-Run: `python scripts/profile_dataset.py --input handoff/data_sample/features_slice.parquet --config experiment.yaml --provisional`
+Run: `python scripts/profile_dataset.py --dataset-id "$DATASET_ID" --config experiment.yaml`
 
-Expected: report labels the sample `provisional`, records its roughly ten-minute span, and refuses to mark it search-eligible.
+Expected: the report records the exact resolved path, checksum, time span, row count, prevalence, gaps, duplicate timestamps, and whether the corpus passes qualification and neural-stage data gates. A failing gate changes tags and downstream eligibility but does not request or generate data.
 
 - [ ] **Step 4: Run tests and commit**
 
@@ -622,32 +602,29 @@ git commit -m "feat: audit target and temporal data quality"
 
 ```python
 # tests/ml/conftest.py
-from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture
 def raw_ticks():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    return [
-        {
-            "source": "coinbase", "channel": "ticker", "product_id": "BTC-USD",
-            "timestamp": (start + timedelta(seconds=index)).isoformat(), "sequence_num": index,
-            "price": 90_000.0 + (index % 17), "best_bid": 89_999.5 + (index % 17),
-            "best_ask": 90_000.5 + (index % 17), "best_bid_quantity": 1.0 + index % 3,
-            "best_ask_quantity": 1.0 + index % 5, "volume_24_h": 10_000.0,
-            "price_percent_chg_24_h": 1.0,
-        }
-        for index in range(500)
-    ]
+    rows = []
+    with Path("handoff/data_sample/raw_slice.ndjson").open() as handle:
+        for line in handle:
+            rows.append(json.loads(line))
+            if len(rows) == 500:
+                break
+    assert len(rows) == 500
+    return rows
 ```
 
 ```python
 # tests/ml/test_feature_engine.py
 import pandas as pd
 
-from btcspiker_ml.features import FeatureEngine, asof_join_external, materialize_features
+from btcspiker_ml.features import FeatureEngine, materialize_features
 
 
 def test_batch_and_stream_features_match(raw_ticks):
@@ -671,16 +648,6 @@ def test_features_do_not_change_when_future_ticks_are_modified(raw_ticks):
         row["price"] = float(row["price"]) * 10
     mutated = materialize_features(pd.DataFrame(mutated_ticks), "multi_window_v1")
     pd.testing.assert_frame_equal(original.iloc[:cutoff], mutated.iloc[:cutoff])
-
-
-def test_external_asof_join_never_uses_future_rows():
-    coinbase = pd.DataFrame({"timestamp": pd.to_datetime(["2026-01-01T00:00:05Z"])})
-    external = pd.DataFrame({
-        "timestamp": pd.to_datetime(["2026-01-01T00:00:04Z", "2026-01-01T00:00:06Z"]),
-        "binance_return_60s": [0.1, 99.0],
-    })
-    joined = asof_join_external(coinbase, external, tolerance_seconds=5)
-    assert joined.loc[0, "binance_return_60s"] == 0.1
 ```
 
 - [ ] **Step 2: Define stable feature sets**
@@ -723,11 +690,6 @@ FEATURE_SETS = {
         ),
         (5, 15, 30, 60, 120, 300), 300, "3", True, ("coinbase_ticker",),
     ),
-    "external_context_v1": FeatureSet(
-        "external_context_v1",
-        ("vol_60s", "return_60s", "book_imbalance", "binance_return_60s", "binance_vol_60s", "coinbase_binance_basis_bps", "binance_funding_rate"),
-        (60, 300), 300, "4", False, ("coinbase_ticker", "binance_agg_trades"),
-    ),
 }
 ```
 
@@ -735,24 +697,7 @@ FEATURE_SETS = {
 
 Move `ProductState` behavior from `features/featurizer.py` into `FeatureEngine`. Make both `features/featurizer.py` and `scripts/replay.py` import the same class. Include `feature_set_id` and `feature_schema_version` in every emitted row. Preserve `future_vol_60s` and `vol_spike` only on labelled training messages; the API payload excludes labels.
 
-Implement external joins with:
-
-```python
-def asof_join_external(coinbase: pd.DataFrame, external: pd.DataFrame, tolerance_seconds: int) -> pd.DataFrame:
-    left = coinbase.sort_values("timestamp").copy()
-    right = external.sort_values("timestamp").copy()
-    left["timestamp"] = pd.to_datetime(left["timestamp"], utc=True)
-    right["timestamp"] = pd.to_datetime(right["timestamp"], utc=True)
-    return pd.merge_asof(
-        left,
-        right,
-        on="timestamp",
-        direction="backward",
-        tolerance=pd.Timedelta(seconds=tolerance_seconds),
-    )
-```
-
-Reject duplicated external timestamps unless their source event IDs are unique.
+Before materializing a feature set, compare its required raw columns with the resolved existing corpus. Run feature sets whose inputs are present. Log unavailable sets as `stage_status=skipped` with the exact missing columns; never fetch or generate replacements.
 
 - [ ] **Step 4: Run feature tests and existing replay tests**
 
@@ -873,7 +818,7 @@ Search spaces must be explicit and bounded: regularization strengths `1e-4..1e2`
 torch>=2.3,<3
 ```
 
-Do not install it in the standard experiment environment. Stage 5 installs it only after the search state confirms 30 days of data and a boosted-tree plateau.
+Do not install it in the standard experiment environment. Stage 5 installs it only after the search state confirms at least 100,000 labelled rows, at least 100 positive events per development fold, and a boosted-tree plateau. If those statistical preconditions fail, log the deterministic skip reason in MLflow and continue to the final report; do not wait for data.
 
 - [ ] **Step 4: Run tests and commit**
 
@@ -936,7 +881,7 @@ The CLI accepts only:
 python scripts/run_experiments.py --config experiment.yaml --dataset-id <id> --stage baseline|linear|trees|ablation|ensemble|neural --resume
 ```
 
-Reject `neural` unless the data manifest covers at least 30 days and the completed search state contains `trees` and `ablation`.
+Reject `neural` unless the data manifest has at least 100,000 labelled rows, each development fold has at least 100 positive events, and the completed search state contains `trees` and `ablation`. Record an ineligible stage as a finished parent MLflow run tagged `stage_status=skipped` with an exact reason.
 
 - [ ] **Step 4: Test successful, pruned, failed, and resumed trials**
 
@@ -980,7 +925,7 @@ def test_development_stage_cannot_open_final_holdout():
 
 - [ ] **Step 2: Implement the sealed-holdout guard and baseline gate**
 
-Permit final-holdout access only from `scripts/qualify_candidate.py` after baseline, linear, trees, ablation, and ensemble stages are complete. Require shipped pickle-versus-MLflow prediction parity on the handoff sample at absolute tolerance `1e-9`, then re-train the exact current logistic configuration on the new development corpus.
+Permit final-holdout access only from `scripts/qualify_candidate.py` after baseline, linear, trees, ablation, and ensemble stages are complete. Require shipped pickle-versus-MLflow prediction parity on the handoff sample at absolute tolerance `1e-9`, then re-train the exact current logistic configuration on the resolved existing development corpus.
 
 - [ ] **Step 3: Run EDA and staged search in cost order**
 
@@ -995,11 +940,11 @@ python scripts/run_experiments.py --config experiment.yaml --dataset-id "$DATASE
 
 Expected: every trial appears in `btc-volatility-tournament`; the final holdout remains sealed; stage summaries name winners and non-winners with fold-level evidence.
 
-- [ ] **Step 4: Apply the data sufficiency checkpoint**
+- [ ] **Step 4: Apply sufficiency labels without stopping the goal**
 
-If the target-aligned quote-and-trade manifest covers fewer than 30 calendar days, do not run Stage 5 or qualify a champion. Leave the collector running, tag results `provisional_data=true`, record the resume condition `coverage_days >= 30`, and pause the Codex goal. Historical trade-only experiments remain research-only.
+Always finish the complete tournament workflow. If the manifest covers fewer than 30 calendar days or lacks target-aligned quote-and-trade fields, tag all runs `qualification_data=false`, keep the final result research-only, and continue through every statistically eligible stage and the final report. Do not download data, start a collector, pause the Codex goal, or record a data-wait resume condition.
 
-If coverage is sufficient and boosted-tree progress plateaued, install `requirements-neural.txt` in a separate environment and run the bounded neural stage once.
+If the neural row/event preconditions pass and boosted-tree progress plateaued, install `requirements-neural.txt` in a separate environment and run the bounded neural stage once. Otherwise create the reason-coded skipped-stage MLflow run and continue.
 
 - [ ] **Step 5: Run guard tests and commit the generated summary**
 
@@ -1014,7 +959,7 @@ git commit -m "exp: record progressive model tournament"
 
 ---
 
-### Task 10: Qualify candidates and export completed evidence to iCloud
+### Task 10: Qualify candidates and export completed evidence locally
 
 **Files:**
 - Create: `btcspiker_ml/qualification.py`
@@ -1025,7 +970,7 @@ git commit -m "exp: record progressive model tournament"
 - Modify: `scripts/log_model_to_mlflow.py:118-162`
 
 **Interfaces:**
-- Produces: `CandidateEvidence`, `QualificationResult`, `qualify(evidence: CandidateEvidence) -> QualificationResult`, `export_run(run_id: str, cloud_root: Path) -> ExportManifest`.
+- Produces: `CandidateEvidence`, `QualificationResult`, `qualify(evidence: CandidateEvidence) -> QualificationResult`, `export_run(run_id: str, artifact_root: Path) -> ExportManifest`.
 - Consumes: completed development runs, one sealed final holdout, storage publication, and MLflow.
 
 - [ ] **Step 1: Write exact gate tests**
@@ -1036,6 +981,8 @@ from btcspiker_ml.qualification import CandidateEvidence, qualify
 
 def test_candidate_fails_when_bootstrap_lower_bound_is_not_positive():
     evidence = CandidateEvidence(
+        coverage_days=45.0,
+        quote_trade_coverage=True,
         folds_won=5,
         bootstrap_lower=-0.001,
         brier_ratio=0.99,
@@ -1052,7 +999,7 @@ def test_candidate_fails_when_bootstrap_lower_bound_is_not_positive():
 
 - [ ] **Step 2: Implement all Staging gates as reason-coded predicates**
 
-Require `folds_won >= 4`, `bootstrap_lower > 0`, `brier_ratio <= 1.05`, `event_f1_delta >= 0`, `final_pr_auc_delta > 0`, `p95_latency_ms <= 800`, `deployable is True`, and `parity_passed is True`. Evaluate the final holdout once, store its access timestamp in `SearchState`, and refuse a second evaluation for the same search ID.
+Require `coverage_days >= 30`, `quote_trade_coverage is True`, `folds_won >= 4`, `bootstrap_lower > 0`, `brier_ratio <= 1.05`, `event_f1_delta >= 0`, `final_pr_auc_delta > 0`, `p95_latency_ms <= 800`, `deployable is True`, and `parity_passed is True`. Evaluate the final holdout once, store its access timestamp in `SearchState`, and refuse a second evaluation for the same search ID.
 
 ```python
 from dataclasses import dataclass
@@ -1060,6 +1007,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class CandidateEvidence:
+    coverage_days: float
+    quote_trade_coverage: bool
     folds_won: int
     bootstrap_lower: float
     brier_ratio: float
@@ -1078,6 +1027,8 @@ class QualificationResult:
 
 def qualify(evidence: CandidateEvidence) -> QualificationResult:
     checks = {
+        "coverage_under_thirty_days": evidence.coverage_days >= 30.0,
+        "quote_trade_coverage_missing": evidence.quote_trade_coverage,
         "fewer_than_four_folds_won": evidence.folds_won >= 4,
         "bootstrap_lower_not_positive": evidence.bootstrap_lower > 0,
         "brier_regression_over_five_percent": evidence.brier_ratio <= 1.05,
@@ -1097,7 +1048,7 @@ Remove generic candidate promotion from `scripts/log_model_to_mlflow.py`; leave 
 
 - [ ] **Step 4: Export immutable run evidence**
 
-`export_run` downloads the model, configs, manifests, predictions, plots, model card, qualification JSON, and dependency freeze into a local temporary directory; creates `export-manifest.json` with SHA-256 per file; atomically publishes the directory contents to `mlflow-exports/run_id=<run_id>/`; then re-hashes the destination. It never deletes local MLflow artifacts.
+`export_run` downloads the model, configs, manifests, predictions, plots, model card, qualification JSON, and dependency freeze into a local temporary directory; creates `export-manifest.json` with SHA-256 per file; atomically publishes the directory contents under the configured local `artifact_root/mlflow-exports/run_id=<run_id>/`; then re-hashes the destination. It never deletes local MLflow artifacts.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -1202,7 +1153,7 @@ git commit -m "feat: serve versioned candidate feature sets"
 - Modify: `progress.md`
 
 **Interfaces:**
-- Produces: the exact `/goal` prompt, pause/resume checkpoint, MLflow/iCloud operating commands, final evidence report, and implementation handoff.
+- Produces: the exact `/goal` prompt, non-data pause/resume rules, local MLflow operating commands, final evidence report, and implementation handoff.
 - Consumes: all prior tasks.
 
 - [ ] **Step 1: Write the durable goal charter**
@@ -1213,19 +1164,19 @@ The charter must contain the objective, global constraints from this plan, stage
 ## Goal completion checklist
 
 - [ ] Data manifest and EDA are published.
-- [ ] Current artifact and new-data logistic baselines are reproduced.
+- [ ] Current artifact and existing-data logistic baselines are reproduced.
 - [ ] Eligible staged searches are complete or the budget is exhausted.
-- [ ] Every run, failure, and pruning decision is visible in MLflow.
+- [ ] Every successful, failed, pruned, and skipped run is visible in MLflow.
 - [ ] Final holdout was opened at most once.
 - [ ] Qualification reasons are recorded.
 - [ ] Passing candidate is Staging only; Production is unchanged.
-- [ ] MLflow evidence is checksum-exported to iCloud.
+- [ ] MLflow evidence is checksum-exported to the local artifact root.
 - [ ] Replay, API, rollback, and latency verification results are recorded.
 ```
 
 - [ ] **Step 2: Add exact operations to the README and runbook**
 
-Document environment setup, `BTCSPIKER_CLOUD_ROOT`, collector start/stop, compaction, dataset profiling, each search stage, MLflow URL, resume state, qualification, Staging smoke test, iCloud export verification, rollback, and the 30-day pause/resume rule.
+Document environment setup, `BTCSPIKER_EXISTING_DATA`, `BTCSPIKER_ARTIFACT_ROOT`, existing-dataset binding, dataset profiling, each search stage, MLflow URL, resume state, qualification, Staging smoke test, local export verification, rollback, and the rule that insufficient data changes qualification language but never pauses this goal.
 
 - [ ] **Step 3: Run the complete verification suite**
 
@@ -1240,9 +1191,9 @@ curl -s http://127.0.0.1:8000/version
 
 Expected: all unit tests pass; replay integration passes; MLflow and API are reachable; `/version` identifies the intended model and stage; Production remains the legacy champion unless the user separately approves promotion.
 
-- [ ] **Step 4: Verify MLflow and iCloud evidence**
+- [ ] **Step 4: Verify MLflow and local exported evidence**
 
-Confirm one successful, one pruned, and one failed run have complete lineage. Recompute every SHA-256 in the chosen run's iCloud `export-manifest.json`. Record dataset ID, search ID, baseline run ID, best candidate run ID, Staging model version, fold metrics, bootstrap interval, final holdout metrics, latency, and export path in `docs/results.md`.
+Confirm one successful, one pruned, and one failed run have complete lineage. Recompute every SHA-256 in the chosen run's local `export-manifest.json`. Record dataset ID, search ID, baseline run ID, best candidate run ID, qualification status, Staging model version when applicable, fold metrics, bootstrap interval, final holdout metrics, latency, and export path in `docs/results.md`.
 
 - [ ] **Step 5: Commit final documentation**
 
@@ -1254,17 +1205,17 @@ git commit -m "docs: operationalize prediction quality goal"
 ## Paste-ready `/goal` command
 
 ```text
-/goal Improve BTCSpiker's out-of-sample prediction of the existing 60-second Coinbase BTC-USD trade-price volatility-spike target by executing docs/superpowers/plans/2026-07-16-btcspiker-goal-experimentation.md and treating docs/goals/prediction-quality-goal.md as the durable charter. Use the data-first gated tournament, log every successful, pruned, and failed trial to MLflow, preserve the sealed temporal holdout, use only free data and local compute, keep active MLflow state local, export immutable datasets and completed-run evidence to iCloud, and never auto-promote Production. If target-aligned quote-and-trade coverage is under 30 days, finish and verify the framework, leave the collector running, record the exact resume condition, and pause rather than claim a reliable model improvement. Continue until a deployable candidate passes every Staging gate or the justified 24-hour search budget is exhausted, then deliver an evidence-backed comparison and next-step report.
+/goal Improve BTCSpiker's out-of-sample prediction of the existing 60-second Coinbase BTC-USD trade-price volatility-spike target by executing docs/superpowers/plans/2026-07-16-btcspiker-goal-experimentation.md and treating docs/goals/prediction-quality-goal.md as the durable charter. Use only the user's already-collected dataset resolved by BTCSPIKER_EXISTING_DATA or the documented local fallback; do not generate, download, collect, or wait for market data. Build and verify the complete experimentation framework, run every statistically eligible feature, model, calibration, and ensemble stage within the justified 24-hour budget, log every successful, pruned, failed, and skipped trial to MLflow, preserve the sealed temporal holdout, keep artifacts local, and never auto-promote Production. Finish with the strongest evidence-backed candidate and clearly label it Staging-qualified or provisional according to the fixed gates; insufficient data changes the qualification result but must not pause or leave this goal unfinished.
 ```
 
 ## Goal operating commands
 
 ```text
 /goal                 View current objective and status.
-/goal pause           Pause before closing the Mac, losing connectivity, or waiting for data.
-/goal resume          Resume after the data manifest reaches 30 days or after a resolved blocker.
+/goal pause           Pause only for an operational interruption or a required user decision unrelated to data accumulation.
+/goal resume          Resume after that operational interruption or user decision is resolved.
 /goal edit            Change constraints without discarding the task history.
 /goal clear           Remove the goal only after accepting the final report or abandoning the effort.
 ```
 
-Keep **Prevent sleep while running** enabled during collection, compaction, or a 24-hour search cycle. Use the same Codex task so its goal, MLflow run IDs, dataset IDs, and resume state remain connected.
+Keep **Prevent sleep while running** enabled during a 24-hour search cycle. Use the same Codex task so its goal, MLflow run IDs, dataset IDs, and resume state remain connected. Data gathering follows the separate plan and has no lifecycle dependency on this goal.

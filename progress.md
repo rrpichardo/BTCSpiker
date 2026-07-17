@@ -89,3 +89,35 @@
 | What's the goal? | A repo-specific `/goal` plan for rigorous ML experimentation and MLflow visibility |
 | What have I learned? | See `findings.md` |
 | What have I done? | Committed the approved design and 12-task implementation plan, including the paste-ready `/goal` command |
+
+## Session: 2026-07-16 — Plan Separation Revision
+
+### Phase 6: Existing-Data Goal and Deferred Data Gathering
+- **Status:** complete
+- Actions taken:
+  - Inspected the committed design, 12-task plan, root planning files, and clean `codex/v1` checkout.
+  - Confirmed the user's desired boundary: run the complete experimentation `/goal` on already-collected data and keep future gathering independent.
+  - Removed synthetic-data assumptions from verification and replaced them with mutations of copies of collected rows for leakage tests.
+  - Replaced Coinbase/Binance acquisition and live-collector work in the main plan with deterministic resolution and manifesting of an existing collected corpus.
+  - Made local filesystem plus local MLflow the active storage contract; remote storage is deferred and provider-neutral.
+  - Changed insufficient data from a pause condition into a reason-coded provisional qualification result.
+  - Added a separate deferred data-gathering plan with a stable manifest/schema handoff boundary.
+  - Self-reviewed task coverage, provider separation, existing feature-column names, neural-stage eligibility, Staging data gates, placeholder absence, and the updated `/goal` length.
+- Files modified:
+  - `docs/superpowers/specs/2026-07-16-btcspiker-goal-experimentation-design.md`
+  - `docs/superpowers/plans/2026-07-16-btcspiker-goal-experimentation.md`
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+- Files created:
+  - `docs/superpowers/plans/2026-07-16-btcspiker-data-gathering.md`
+
+## Revision Verification
+| Test | Expected | Actual | Status |
+|------|----------|--------|--------|
+| Markdown whitespace | No errors | `git diff --check` exited 0 | PASS |
+| Main plan task count | 12 | 12 numbered tasks | PASS |
+| Goal length | At most 4,000 characters | 1,036 characters | PASS |
+| Placeholder scan | No forbidden placeholders | No matches | PASS |
+| Data separation | No Coinbase/Binance acquisition, collector, iCloud, or data-wait command in main plan | No matches | PASS |
+| Existing feature contract | Resolver requires the shipped seven feature names plus timestamp and target | Matches `handoff/models/artifacts/metadata.json` and collected Parquet schema | PASS |

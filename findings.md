@@ -6,6 +6,9 @@
 - Log experiments so the user can inspect and compare them in MLflow.
 - Optimize prediction quality as much as practical without invalid evaluation or hidden leakage.
 - Keep the existing 60-second binary volatility-spike target as the sole primary target.
+- Run the complete experimentation framework and `/goal` tournament now using the user's already-collected data.
+- Do not generate synthetic market observations.
+- Keep all future market-data gathering, provider selection, cloud storage, and accumulation waiting in a separate deferred plan.
 
 ## Research Findings
 - The active checkout is `/Users/ricopichardo/Claude/BTCSpiker` on branch `codex/v1` at commit `d565e33`; `main` is at `c74ddba`.
@@ -21,6 +24,8 @@
 - Existing feature work tested four small logistic-regression feature variants; `spread_mean_60s` helped validation PR-AUC, while `price_range_60s` did not. No tracked broad model-family search is present in the checkout.
 - The full `data/raw` and `data/processed` datasets are absent from this checkout and intentionally gitignored. `reports/` is empty except for `.gitkeep`.
 - The only local training-like data is `handoff/data_sample/features_slice.csv` with 6,396 labelled rows spanning about nine minutes, plus a 7,156-line raw slice spanning about ten minutes. This sample is insufficient for trustworthy broad feature/model selection.
+- The repository also contains 122,771 prior test predictions spanning `2026-04-07T00:12:16Z` through `2026-04-07T15:54:58Z`, but those rows contain predictions and labels rather than the full feature matrix.
+- Project documentation says the original collected `data/processed/features.parquet` contained about 784,000 rows and 48 MB, but that full table is not present in this checkout. The experimentation plan therefore resolves `BTCSPIKER_EXISTING_DATA` first, then `data/processed/features.parquet`, then the checked-in collected sample as a fallback.
 - The current dependency set supports scikit-learn and MLflow but does not include a hyperparameter optimizer or boosted-tree libraries such as Optuna, XGBoost, LightGBM, or CatBoost.
 - The user permits storing additional datasets and artifacts with a cloud provider and asked specifically about iCloud.
 - iCloud Drive is mounted and syncing locally at `/Users/ricopichardo/Library/Mobile Documents/com~apple~CloudDocs`; the iCloud Drive sync process is running.
@@ -45,10 +50,13 @@
 | Establish immutable baselines and temporal validation before broad search | Financial time series are particularly vulnerable to look-ahead leakage and regime overfitting. |
 | Put the detailed experiment charter in a repo document and keep `/goal` concise | Codex goal objectives are capped at 4,000 characters and can point to a longer file. |
 | Do not expand the primary objective to 5- or 15-minute horizons | The user explicitly selected the existing 60-second horizon. |
-| Treat additional historical data as a prerequisite to credible model search | Searching many models against a nine-minute local sample would mostly select noise and cannot validate market-regime robustness. |
-| Use iCloud for immutable or append-only dataset partitions and exported experiment artifacts, not as the live MLflow SQLite database | iCloud file synchronization is suitable for durable files but not a safe concurrency layer for a database being actively written. |
+| Treat additional historical data as a prerequisite to credible promotion, not to running the goal | Searching many models against a nine-minute sample may select noise, so insufficient coverage forces provisional reporting but does not block framework execution or the tournament. |
+| Superseded: use iCloud for immutable dataset and experiment exports | The revised active goal keeps artifacts local and defers all remote storage choices to the separate data-gathering plan. |
 | Separate research-only features from deployable features | External or temporal features may improve offline scores but cannot qualify for Staging until the streaming path can compute them with exact parity. |
 | Use Coinbase data for the target and Binance archives only for external as-of context | This preserves the BTC-USD prediction contract and avoids training a Coinbase deployment on a substituted BTCUSDT target. |
+| Remove acquisition from the active experimentation goal | The user wants the full experiment task completed now and will decide the future data plan independently. |
+| Use only resolved existing data in the active goal | The resolver must fail rather than generate, download, stream, or silently combine market observations. |
+| Never pause the active goal for data accumulation | Insufficient coverage produces a reason-coded provisional result; a future dataset starts a new immutable search. |
 
 ## Issues Encountered
 | Issue | Resolution |
