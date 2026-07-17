@@ -242,7 +242,9 @@ def _check_service(name: str) -> dict:
 def _compute_status() -> dict:
     timeout = _probe_timeout()
     futures = {name: _EXECUTOR.submit(_check_service, name) for name in SERVICE_NAMES}
-    done, _ = concurrent.futures.wait(futures.values(), timeout=timeout)
+    # Outlast the per-probe urllib timeout by a proportional margin so a
+    # service answering just under it isn't misreported as a round timeout.
+    done, _ = concurrent.futures.wait(futures.values(), timeout=timeout * 1.25)
 
     services = []
     for name in SERVICE_NAMES:
