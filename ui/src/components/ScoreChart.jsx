@@ -8,6 +8,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { buildChartData } from "../chartData.js";
 
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -20,23 +21,9 @@ function timeLabel(timestamp) {
   return Number.isNaN(date.getTime()) ? "Unavailable" : timeFormatter.format(date);
 }
 
-// predictions arrives newest-first from the API; the chart needs
-// chronological (oldest -> newest, left -> right) order.
 export default function ScoreChart({ predictions }) {
   const summaryId = useId();
-  const chartData = useMemo(
-    () =>
-      [...predictions]
-        .reverse()
-        .map((prediction) => ({
-          timestamp: new Date(prediction.feature_ts || prediction.api_ts).getTime(),
-          score: prediction.score,
-        }))
-        .filter(
-          (point) => Number.isFinite(point.timestamp) && typeof point.score === "number",
-        ),
-    [predictions],
-  );
+  const chartData = useMemo(() => buildChartData(predictions), [predictions]);
   const summary = useMemo(() => {
     if (chartData.length === 0) return "No valid score points are available.";
     const scores = chartData.map((point) => point.score);

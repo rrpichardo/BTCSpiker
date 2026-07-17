@@ -69,6 +69,9 @@ STARTUP_READY_TIMEOUT = STARTUP_TIMEOUT + 5.0
 KAFKA_SOCKET_TIMEOUT_MS = 3000
 THREAD_JOIN_TIMEOUT = 10.0
 COMMIT_RETRY_BACKOFF_SEC = 0.1
+CONSUMER_RESTART_BACKOFF_SEC = 1.0
+BROKER_HEALTHCHECK_INTERVAL_SEC = 5.0
+BROKER_HEALTHCHECK_TIMEOUT_SEC = 1.0
 
 # Pinned event_id / column ordering shared by parsing, inserts, and reads.
 EVENT_FIELDS = [
@@ -320,6 +323,7 @@ class ConsumerState:
     consume_errors: int = 0
     write_errors: int = 0
     alive: bool = False
+    broker_ok: bool = False
     ready: bool = False
     startup_error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -332,6 +336,7 @@ def _reset_state(state: ConsumerState) -> None:
         state.consume_errors = 0
         state.write_errors = 0
         state.alive = False
+        state.broker_ok = False
         state.ready = False
         state.startup_error = None
 
@@ -341,7 +346,7 @@ def health_snapshot(state: ConsumerState, db_path: str | Path) -> dict:
     rows_total, db_ok = _rows_total(db_path)
     with state.lock:
         return {
-            "ok": state.alive and db_ok,
+            "ok": state.alive and state.broker_ok and db_ok,
             "last_event_ts": state.last_event_ts,
             "last_write_ts": state.last_write_ts,
             "rows_total": rows_total,
@@ -459,6 +464,7 @@ def consume_loop(
 
         with state.lock:
             state.alive = True
+            state.broker_ok = True
             state.ready = True
             state.startup_error = None
         if ready_event is not None:
@@ -468,8 +474,24 @@ def consume_loop(
         pending_batch = None
         pending_events = None
         pending_persisted = False
+        next_broker_healthcheck = time.monotonic() + BROKER_HEALTHCHECK_INTERVAL_SEC
 
         while not stop_event.is_set():
+            if time.monotonic() >= next_broker_healthcheck:
+                try:
+                    consumer.list_topics(timeout=BROKER_HEALTHCHECK_TIMEOUT_SEC)
+                except Exception as exc:
+                    with state.lock:
+                        state.broker_ok = False
+                        state.consume_errors += 1
+                    log.error("Kafka broker healthcheck failed: %s", exc)
+                else:
+                    with state.lock:
+                        state.broker_ok = True
+                next_broker_healthcheck = (
+                    time.monotonic() + BROKER_HEALTHCHECK_INTERVAL_SEC
+                )
+
             if pending_batch is None:
                 batch = []
                 deadline = time.monotonic() + BATCH_WINDOW_SEC
@@ -480,6 +502,7 @@ def consume_loop(
                     if msg.error():
                         if msg.error().code() != KafkaError._PARTITION_EOF:
                             with state.lock:
+                                state.broker_ok = False
                                 state.consume_errors += 1
                             log.error("Kafka error: %s", msg.error())
                         continue
@@ -528,6 +551,7 @@ def consume_loop(
                 committed = consumer.commit(offsets=offsets, asynchronous=False)
             except Exception as exc:
                 with state.lock:
+                    state.broker_ok = False
                     state.consume_errors += 1
                 log.error("Kafka offset commit failed, will retry: %s", exc)
                 stop_event.wait(COMMIT_RETRY_BACKOFF_SEC)
@@ -547,6 +571,7 @@ def consume_loop(
             )
             if commit_errors:
                 with state.lock:
+                    state.broker_ok = False
                     state.consume_errors += len(commit_errors)
                 for partition in commit_errors:
                     log.error(
@@ -576,6 +601,7 @@ def consume_loop(
     finally:
         with state.lock:
             state.alive = False
+            state.broker_ok = False
             state.ready = False
         if ready_event is not None:
             ready_event.set()
@@ -587,6 +613,29 @@ def consume_loop(
         if conn is not None:
             conn.close()
         log.info("Materializer consumer stopped.")
+
+
+def supervise_consumer(
+    state: ConsumerState,
+    stop_event: threading.Event,
+    ready_event: threading.Event,
+) -> None:
+    """Restart the consumer loop when it fails after initial readiness."""
+    first_attempt = True
+    while not stop_event.is_set():
+        consume_loop(
+            state,
+            stop_event,
+            ready_event if first_attempt else None,
+        )
+        first_attempt = False
+        if stop_event.is_set():
+            break
+        log.error(
+            "Materializer consumer stopped unexpectedly; restarting in %.1fs",
+            CONSUMER_RESTART_BACKOFF_SEC,
+        )
+        stop_event.wait(CONSUMER_RESTART_BACKOFF_SEC)
 
 
 # ---------------------------------------------------------------------------
@@ -602,9 +651,9 @@ async def lifespan(app: FastAPI):
     stop_event = threading.Event()
     ready_event = threading.Event()
     thread = threading.Thread(
-        target=consume_loop,
+        target=supervise_consumer,
         args=(_state, stop_event, ready_event),
-        name="materializer-consumer",
+        name="materializer-consumer-supervisor",
         daemon=True,
     )
     thread.start()

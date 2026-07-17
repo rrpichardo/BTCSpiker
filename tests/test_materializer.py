@@ -690,6 +690,7 @@ def test_health_snapshot_reflects_rows_and_counters(tmp_path):
         consume_errors=2,
         write_errors=1,
         alive=True,
+        broker_ok=True,
     )
 
     snapshot = materializer.health_snapshot(state, db_path)
@@ -708,6 +709,16 @@ def test_health_snapshot_ok_false_when_consumer_not_alive(tmp_path):
     db_path = tmp_path / "test.db"
     materializer.init_db(db_path)
     state = materializer.ConsumerState(alive=False)
+
+    snapshot = materializer.health_snapshot(state, db_path)
+
+    assert snapshot["ok"] is False
+
+
+def test_health_snapshot_ok_false_when_broker_probe_failed(tmp_path):
+    db_path = tmp_path / "test.db"
+    materializer.init_db(db_path)
+    state = materializer.ConsumerState(alive=True, broker_ok=False)
 
     snapshot = materializer.health_snapshot(state, db_path)
 
@@ -861,6 +872,50 @@ def test_lifespan_waits_for_consumer_readiness_and_joins_on_shutdown(monkeypatch
         assert materializer._state.ready is True
 
     assert stopped.is_set()
+
+
+def test_supervisor_restarts_consumer_after_post_readiness_failure(monkeypatch):
+    stop_event = threading.Event()
+    ready_event = threading.Event()
+    restarted = threading.Event()
+    calls = []
+
+    def _crash_then_wait(state, loop_stop_event, loop_ready_event=None):
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            with state.lock:
+                state.ready = True
+                state.alive = True
+                state.broker_ok = True
+            loop_ready_event.set()
+            return
+        restarted.set()
+        loop_stop_event.wait(1.0)
+
+    monkeypatch.setattr(materializer, "consume_loop", _crash_then_wait)
+    monkeypatch.setattr(materializer, "CONSUMER_RESTART_BACKOFF_SEC", 0)
+    state = materializer.ConsumerState()
+    thread = threading.Thread(
+        target=materializer.supervise_consumer,
+        args=(state, stop_event, ready_event),
+    )
+
+    thread.start()
+    assert ready_event.wait(1.0)
+    assert restarted.wait(1.0)
+    stop_event.set()
+    thread.join(1.0)
+
+    assert calls == [1, 2]
+    assert thread.is_alive() is False
+
+
+def test_compose_healthcheck_requires_materializer_ok_true():
+    compose = (PROJECT_ROOT / "docker-compose.yaml").read_text()
+
+    materializer_section = compose.split("  materializer:", 1)[1].split("  ui:", 1)[0]
+    assert "json.load" in materializer_section
+    assert ".get('ok') is True" in materializer_section
 
 
 if __name__ == "__main__":

@@ -20,13 +20,28 @@ jobs:
         run: pip install black ruff
 
       - name: Black (format check)
-        run: black --check api/ tests/
+        run: black --check api/ materializer/ scripts/feature_to_predict_bridge.py tests/
 
       - name: Ruff (lint check)
-        run: ruff check api/ tests/
+        run: ruff check api/ materializer/ scripts/feature_to_predict_bridge.py tests/
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install unit-test dependencies
+        run: pip install -r requirements-dev.txt -r docker/requirements.api.txt -r materializer/requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests --ignore=tests/test_replay_integration.py
 
   integration-replay:
-    needs: lint
+    needs: [lint, unit]
     runs-on: ubuntu-latest
     # This job must pass before a PR can be merged — do not add continue-on-error
     steps:

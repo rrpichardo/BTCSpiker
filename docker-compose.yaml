@@ -350,7 +350,7 @@ services:
     volumes:
       - predictions-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8090/health')); raise SystemExit(0 if data.get('ok') is True else 1)"]
       interval: 10s
       timeout: 5s
       retries: 10
