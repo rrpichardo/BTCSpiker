@@ -11,10 +11,11 @@ SQLite read model (WAL mode) and serves it over a small FastAPI surface:
                                             service, so health must live
                                             under that prefix too)
 
-Kafka is the source of truth; the SQLite file is a disposable projection —
-`docker volume rm` + a topic replay (fresh consumer group, auto.offset.reset
-= earliest) rebuilds it from scratch. Delivery on ticks.predictions is
-at-least-once, so every insert is `INSERT OR IGNORE` keyed on `event_id`.
+Kafka is the source of truth; the SQLite file is a disposable projection.
+When the projection is missing or rebuilt, assigned partitions are explicitly
+rewound to the beginning even if the stable consumer group has committed
+offsets. Delivery on ticks.predictions is at-least-once, so every insert is
+`INSERT OR IGNORE` keyed on `event_id`.
 
 Importing this module has NO side effects: no Kafka connection, no thread,
 no DB file creation. The consumer thread is started from the FastAPI
@@ -26,6 +27,7 @@ Usage
     uvicorn materializer:app --host 0.0.0.0 --port 8090
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -37,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, KafkaError, OFFSET_BEGINNING, TopicPartition
 from fastapi import FastAPI, HTTPException
 
 logging.basicConfig(
@@ -63,6 +65,9 @@ PRUNE_KEEP_ROWS = 100_000
 LIMIT_MIN = 1
 LIMIT_MAX = 2000
 STARTUP_TIMEOUT = 30.0
+STARTUP_READY_TIMEOUT = STARTUP_TIMEOUT + 5.0
+KAFKA_SOCKET_TIMEOUT_MS = 3000
+THREAD_JOIN_TIMEOUT = 10.0
 
 # Pinned event_id / column ordering shared by parsing, inserts, and reads.
 EVENT_FIELDS = [
@@ -102,9 +107,16 @@ INSERT_SQL = (
     f"VALUES ({', '.join('?' for _ in EVENT_FIELDS)})"
 )
 
+NEWEST_ORDER_SQL = """
+ORDER BY
+    julianday(COALESCE(api_ts, feature_ts)) DESC,
+    source_partition DESC,
+    source_offset DESC,
+    event_id ASC
+"""
+
 RECENT_SQL = (
-    f"SELECT {', '.join(EVENT_FIELDS)} FROM predictions "
-    "ORDER BY source_offset DESC, event_id ASC LIMIT ?"
+    f"SELECT {', '.join(EVENT_FIELDS)} FROM predictions " f"{NEWEST_ORDER_SQL} LIMIT ?"
 )
 
 
@@ -127,6 +139,7 @@ def _open_verified(path: Path) -> sqlite3.Connection | None:
     Returns None (closing any partial handle) if the file exists but is
     corrupt or not a SQLite database at all.
     """
+    conn = None
     try:
         conn = sqlite3.connect(str(path))
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
@@ -136,21 +149,22 @@ def _open_verified(path: Path) -> sqlite3.Connection | None:
             return None
         return conn
     except sqlite3.DatabaseError:
+        if conn is not None:
+            conn.close()
         return None
 
 
-def init_db(path: str | Path) -> sqlite3.Connection:
-    """Open (or create) the predictions read-model DB: WAL mode, schema applied.
-
-    A corrupt file is deleted (with its -wal/-shm siblings) and recreated —
-    Kafka is the source of truth, so the read model can always be rebuilt by
-    replaying `ticks.predictions` from a fresh consumer group.
-    """
+def _init_db_with_recovery_status(
+    path: str | Path,
+) -> tuple[sqlite3.Connection, bool]:
+    """Open the read model and report whether Kafka replay is required."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
 
     conn = _open_verified(path)
-    if conn is None:
+    corrupt = conn is None
+    if corrupt:
         log.error(
             "Predictions DB at %s is corrupt/unreadable; deleting and rebuilding "
             "from Kafka replay",
@@ -160,9 +174,26 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         conn = sqlite3.connect(str(path))
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
 
+    schema_existed = (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions'"
+        ).fetchone()
+        is not None
+    )
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(SCHEMA_SQL)
     conn.commit()
+    return conn, corrupt or not existed or not schema_existed
+
+
+def init_db(path: str | Path) -> sqlite3.Connection:
+    """Open (or create) the predictions read-model DB: WAL mode, schema applied.
+
+    A corrupt file is deleted (with its -wal/-shm siblings) and recreated —
+    Kafka is the source of truth, so the consumer explicitly replays assigned
+    partitions when this function had to create or rebuild the projection.
+    """
+    conn, _ = _init_db_with_recovery_status(path)
     return conn
 
 
@@ -197,10 +228,12 @@ def maybe_prune(conn: sqlite3.Connection, inserted_since_prune: int) -> bool:
             DELETE FROM predictions
             WHERE event_id NOT IN (
                 SELECT event_id FROM predictions
-                ORDER BY source_offset DESC, event_id ASC
+                {NEWEST_ORDER_SQL}
                 LIMIT ?
             )
-            """,
+            """.format(
+                NEWEST_ORDER_SQL=NEWEST_ORDER_SQL
+            ),
             (PRUNE_KEEP_ROWS,),
         )
     return True
@@ -212,8 +245,15 @@ def _recent_rows(conn: sqlite3.Connection, limit: int) -> list[dict]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def _open_readonly(path: str | Path) -> sqlite3.Connection:
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    return conn
+
+
 def recent(path_or_conn: str | Path | sqlite3.Connection, limit: int) -> list[dict]:
-    """Return up to `limit` predictions, newest-first by source_offset.
+    """Return up to `limit` predictions, newest timestamp first.
 
     Given a path, opens a short-lived read connection — the HTTP-handler
     pattern, safe across threads since the consumer thread owns the single
@@ -223,7 +263,7 @@ def recent(path_or_conn: str | Path | sqlite3.Connection, limit: int) -> list[di
     if isinstance(path_or_conn, sqlite3.Connection):
         return _recent_rows(path_or_conn, limit)
 
-    conn = sqlite3.connect(str(path_or_conn))
+    conn = _open_readonly(path_or_conn)
     try:
         return _recent_rows(conn, limit)
     finally:
@@ -233,7 +273,7 @@ def recent(path_or_conn: str | Path | sqlite3.Connection, limit: int) -> list[di
 def _rows_total(path: str | Path) -> tuple[int, bool]:
     """Return (count, db_ok) via a short-lived read connection."""
     try:
-        conn = sqlite3.connect(str(path))
+        conn = _open_readonly(path)
         try:
             count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
             return count, True
@@ -279,7 +319,20 @@ class ConsumerState:
     consume_errors: int = 0
     write_errors: int = 0
     alive: bool = False
+    ready: bool = False
+    startup_error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _reset_state(state: ConsumerState) -> None:
+    with state.lock:
+        state.last_event_ts = None
+        state.last_write_ts = None
+        state.consume_errors = 0
+        state.write_errors = 0
+        state.alive = False
+        state.ready = False
+        state.startup_error = None
 
 
 def health_snapshot(state: ConsumerState, db_path: str | Path) -> dict:
@@ -306,8 +359,8 @@ def validate_limit(limit: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Kafka consumer loop (background thread; requires a live broker, so it is
-# not exercised by unit tests — those cover the pure functions above)
+# Kafka consumer loop (background thread in production; focused tests inject a
+# deterministic fake consumer so write/commit ordering is covered without a broker)
 # ---------------------------------------------------------------------------
 
 
@@ -326,7 +379,50 @@ def _wait_for_kafka(consumer: Consumer, bootstrap: str, timeout: float) -> None:
     ) from last_exc
 
 
-def consume_loop(state: ConsumerState, stop_event: threading.Event) -> None:
+def _subscribe_for_projection(consumer: Consumer, replay_from_beginning: bool) -> None:
+    """Subscribe, overriding stored group offsets when the projection was rebuilt."""
+    if not replay_from_beginning:
+        consumer.subscribe([TOPIC_PREDICTIONS])
+        return
+
+    rewound_partitions: set[tuple[str, int]] = set()
+
+    def _on_assign(assigned_consumer: Consumer, partitions: list[TopicPartition]):
+        rewound = 0
+        for partition in partitions:
+            key = (partition.topic, partition.partition)
+            if key not in rewound_partitions:
+                partition.offset = OFFSET_BEGINNING
+                rewound_partitions.add(key)
+                rewound += 1
+        if rewound:
+            log.warning(
+                "Predictions projection is new/rebuilt; replaying %d assigned "
+                "partition(s) from the beginning",
+                rewound,
+            )
+        assigned_consumer.assign(partitions)
+
+    consumer.subscribe([TOPIC_PREDICTIONS], on_assign=_on_assign)
+
+
+def _offsets_after(messages) -> list[TopicPartition]:
+    """Return explicit next offsets for every partition represented in a batch."""
+    next_offsets: dict[tuple[str, int], int] = {}
+    for message in messages:
+        key = (message.topic(), message.partition())
+        next_offsets[key] = max(next_offsets.get(key, 0), message.offset() + 1)
+    return [
+        TopicPartition(topic, partition, offset)
+        for (topic, partition), offset in sorted(next_offsets.items())
+    ]
+
+
+def consume_loop(
+    state: ConsumerState,
+    stop_event: threading.Event,
+    ready_event: threading.Event | None = None,
+) -> None:
     """Background thread entrypoint: ticks.predictions -> SQLite read model.
 
     Batches up to BATCH_MAX_SIZE messages or a BATCH_WINDOW_SEC window,
@@ -334,81 +430,118 @@ def consume_loop(state: ConsumerState, stop_event: threading.Event) -> None:
     offsets — at-least-once delivery + the event_id primary key make replays
     harmless.
     """
-    conn = init_db(PREDICTIONS_DB_PATH)
-    consumer = Consumer(
-        {
-            "bootstrap.servers": KAFKA_BOOTSTRAP,
-            "group.id": KAFKA_GROUP_ID,
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        }
-    )
-    consumer.subscribe([TOPIC_PREDICTIONS])
-    _wait_for_kafka(consumer, KAFKA_BOOTSTRAP, STARTUP_TIMEOUT)
-    log.info(
-        "Materializer consumer started | %s -> %s | group=%s",
-        TOPIC_PREDICTIONS,
-        PREDICTIONS_DB_PATH,
-        KAFKA_GROUP_ID,
-    )
-
-    with state.lock:
-        state.alive = True
-    inserted_since_prune = 0
-
+    conn = None
+    consumer = None
     try:
+        conn, replay_from_beginning = _init_db_with_recovery_status(PREDICTIONS_DB_PATH)
+        consumer = Consumer(
+            {
+                "bootstrap.servers": KAFKA_BOOTSTRAP,
+                "group.id": KAFKA_GROUP_ID,
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+                "socket.timeout.ms": KAFKA_SOCKET_TIMEOUT_MS,
+            }
+        )
+        _subscribe_for_projection(consumer, replay_from_beginning)
+        _wait_for_kafka(consumer, KAFKA_BOOTSTRAP, STARTUP_TIMEOUT)
+        log.info(
+            "Materializer consumer started | %s -> %s | group=%s",
+            TOPIC_PREDICTIONS,
+            PREDICTIONS_DB_PATH,
+            KAFKA_GROUP_ID,
+        )
+
+        with state.lock:
+            state.alive = True
+            state.ready = True
+            state.startup_error = None
+        if ready_event is not None:
+            ready_event.set()
+
+        inserted_since_prune = 0
+        pending_batch = None
+        pending_events = None
+
         while not stop_event.is_set():
-            batch = []
-            deadline = time.monotonic() + BATCH_WINDOW_SEC
-            while len(batch) < BATCH_MAX_SIZE and time.monotonic() < deadline:
-                msg = consumer.poll(timeout=0.2)
-                if msg is None:
-                    continue
-                if msg.error():
-                    if msg.error().code() != KafkaError._PARTITION_EOF:
-                        log.error("Kafka error: %s", msg.error())
-                    continue
-                batch.append(msg)
+            if pending_batch is None:
+                batch = []
+                deadline = time.monotonic() + BATCH_WINDOW_SEC
+                while len(batch) < BATCH_MAX_SIZE and time.monotonic() < deadline:
+                    msg = consumer.poll(timeout=0.2)
+                    if msg is None:
+                        continue
+                    if msg.error():
+                        if msg.error().code() != KafkaError._PARTITION_EOF:
+                            with state.lock:
+                                state.consume_errors += 1
+                            log.error("Kafka error: %s", msg.error())
+                        continue
+                    batch.append(msg)
 
-            if not batch:
-                continue
-
-            events = []
-            for msg in batch:
-                try:
-                    event = parse_event(msg.value())
-                except ValueError as exc:
-                    with state.lock:
-                        state.consume_errors += 1
-                    log.warning("Skipping malformed prediction event: %s", exc)
+                if not batch:
                     continue
-                events.append(event)
-                with state.lock:
-                    if event["api_ts"] and (
-                        state.last_event_ts is None
-                        or event["api_ts"] > state.last_event_ts
-                    ):
-                        state.last_event_ts = event["api_ts"]
+
+                events = []
+                for msg in batch:
+                    try:
+                        event = parse_event(msg.value())
+                    except ValueError as exc:
+                        with state.lock:
+                            state.consume_errors += 1
+                        log.warning("Skipping malformed prediction event: %s", exc)
+                        continue
+                    events.append(event)
+                pending_batch = batch
+                pending_events = events
 
             try:
-                inserted = insert_events(conn, events)
+                inserted = insert_events(conn, pending_events)
                 inserted_since_prune += inserted
+                if inserted:
+                    newest = _recent_rows(conn, 1)[0]
+                    with state.lock:
+                        state.last_event_ts = newest["api_ts"] or newest["feature_ts"]
+                        state.last_write_ts = datetime.now(timezone.utc).isoformat()
                 if maybe_prune(conn, inserted_since_prune):
-                    inserted_since_prune = 0
-                with state.lock:
-                    state.last_write_ts = datetime.now(timezone.utc).isoformat()
+                    inserted_since_prune %= PRUNE_EVERY_N_INSERTS
             except sqlite3.DatabaseError as exc:
                 with state.lock:
                     state.write_errors += 1
                 log.error("Batch write failed, will retry: %s", exc)
-                continue  # don't commit offsets; retry this batch next loop
+                stop_event.wait(0.1)
+                continue
 
-            consumer.commit(asynchronous=False)
+            committed = consumer.commit(
+                offsets=_offsets_after(pending_batch), asynchronous=False
+            )
+            for partition in committed or []:
+                if partition.error is not None:
+                    raise RuntimeError(
+                        "Kafka offset commit failed for "
+                        f"{partition.topic}[{partition.partition}]: {partition.error}"
+                    )
+            pending_batch = None
+            pending_events = None
+    except Exception as exc:
+        with state.lock:
+            if not state.ready:
+                state.startup_error = str(exc)
+        if not stop_event.is_set():
+            log.exception("Materializer consumer failed: %s", exc)
     finally:
         with state.lock:
             state.alive = False
-        consumer.close()
-        conn.close()
+            state.ready = False
+        if ready_event is not None:
+            ready_event.set()
+        if consumer is not None:
+            try:
+                consumer.close()
+            except Exception:
+                log.exception("Failed to close Kafka consumer")
+        if conn is not None:
+            conn.close()
         log.info("Materializer consumer stopped.")
 
 
@@ -417,17 +550,42 @@ def consume_loop(state: ConsumerState, stop_event: threading.Event) -> None:
 # ---------------------------------------------------------------------------
 
 _state = ConsumerState()
-_stop_event = threading.Event()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _reset_state(_state)
+    stop_event = threading.Event()
+    ready_event = threading.Event()
     thread = threading.Thread(
-        target=consume_loop, args=(_state, _stop_event), daemon=True
+        target=consume_loop,
+        args=(_state, stop_event, ready_event),
+        name="materializer-consumer",
+        daemon=True,
     )
     thread.start()
-    yield
-    _stop_event.set()
+    signaled = await asyncio.to_thread(ready_event.wait, STARTUP_READY_TIMEOUT)
+    with _state.lock:
+        ready = _state.ready
+        startup_error = _state.startup_error
+    if not signaled or not ready:
+        stop_event.set()
+        await asyncio.to_thread(thread.join, THREAD_JOIN_TIMEOUT)
+        if thread.is_alive():
+            log.error("Materializer consumer did not stop after startup failure")
+        detail = startup_error or "consumer readiness timed out"
+        raise RuntimeError(f"Materializer startup failed: {detail}")
+
+    try:
+        yield
+    finally:
+        stop_event.set()
+        await asyncio.to_thread(thread.join, THREAD_JOIN_TIMEOUT)
+        if thread.is_alive():
+            log.error(
+                "Materializer consumer did not stop within %.1fs",
+                THREAD_JOIN_TIMEOUT,
+            )
 
 
 app = FastAPI(title="BTCSpiker Materializer", lifespan=lifespan)
@@ -439,7 +597,16 @@ def get_recent(limit: int = 200):
         limit = validate_limit(limit)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    rows = recent(PREDICTIONS_DB_PATH, limit)
+    with _state.lock:
+        ready = _state.ready
+    if not ready:
+        raise HTTPException(status_code=503, detail="materializer is not ready")
+    try:
+        rows = recent(PREDICTIONS_DB_PATH, limit)
+    except sqlite3.DatabaseError as exc:
+        raise HTTPException(
+            status_code=503, detail="predictions database unavailable"
+        ) from exc
     return {"predictions": rows, "count": len(rows)}
 
 

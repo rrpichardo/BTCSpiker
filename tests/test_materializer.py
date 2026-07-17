@@ -1,10 +1,8 @@
 """Unit tests for the materializer read-model service.
 
-Exercises the pure functions directly (init_db, insert_events, maybe_prune,
-recent, health_snapshot, parse_event, validate_limit) against a tmp_path
-SQLite file. No Kafka broker and no HTTP client involved — importing
-materializer.py must have zero side effects, so these tests never start the
-consumer thread or the FastAPI app.
+Exercises SQLite helpers against tmp_path databases, the consumer loop through
+a deterministic fake Kafka consumer, and the actual FastAPI route contract via
+TestClient. No broker or listening network socket is required.
 
 Run from the repo root with:
 
@@ -13,16 +11,113 @@ Run from the repo root with:
 
 import json
 import logging
+import sqlite3
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
+from confluent_kafka import OFFSET_BEGINNING, TopicPartition
+from fastapi.testclient import TestClient
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MATERIALIZER_DIR = PROJECT_ROOT / "materializer"
 sys.path.insert(0, str(MATERIALIZER_DIR))
 
 import materializer  # noqa: E402
+
+
+class _FakeMessage:
+    def __init__(self, event: dict, offset: int, partition: int = 0):
+        self._value = json.dumps(event).encode()
+        self._offset = offset
+        self._partition = partition
+
+    def value(self):
+        return self._value
+
+    def offset(self):
+        return self._offset
+
+    def partition(self):
+        return self._partition
+
+    def topic(self):
+        return materializer.TOPIC_PREDICTIONS
+
+    def error(self):
+        return None
+
+
+class _FakeKafkaError:
+    def __init__(self, code):
+        self._code = code
+
+    def code(self):
+        return self._code
+
+    def __str__(self):
+        return f"fake Kafka error {self._code}"
+
+
+class _FakeErrorMessage:
+    def __init__(self, code):
+        self._error = _FakeKafkaError(code)
+
+    def error(self):
+        return self._error
+
+
+class _FakeConsumer:
+    def __init__(
+        self,
+        messages,
+        stop_event,
+        *,
+        committed_offset=0,
+        replay_messages=None,
+        commits_until_stop=1,
+    ):
+        self.messages = list(messages)
+        self.replay_messages = list(replay_messages or [])
+        self.stop_event = stop_event
+        self.committed_offset = committed_offset
+        self.commits_until_stop = commits_until_stop
+        self.assigned = []
+        self.commits = []
+        self.closed = False
+
+    def list_topics(self, timeout):
+        return object()
+
+    def subscribe(self, topics, on_assign=None):
+        self.topics = topics
+        self.on_assign = on_assign
+        if on_assign is not None:
+            on_assign(
+                self,
+                [TopicPartition(topics[0], 0, self.committed_offset)],
+            )
+
+    def assign(self, partitions):
+        self.assigned = list(partitions)
+        if any(partition.offset == OFFSET_BEGINNING for partition in partitions):
+            self.messages = list(self.replay_messages)
+
+    def poll(self, timeout):
+        if self.messages:
+            return self.messages.pop(0)
+        return None
+
+    def commit(self, message=None, offsets=None, asynchronous=True):
+        self.commits.append(offsets)
+        if len(self.commits) >= self.commits_until_stop:
+            self.stop_event.set()
+        return offsets
+
+    def close(self):
+        self.closed = True
 
 
 def _event(event_id: str, source_offset: int, **overrides) -> dict:
@@ -94,12 +189,88 @@ def test_init_db_recreates_wal_and_shm_siblings(tmp_path):
     assert inserted == 1
 
 
+def test_consumer_retries_failed_batch_before_polling_or_committing_past_it(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    first = _FakeMessage(_event("e1", 1), 0)
+    second = _FakeMessage(_event("e2", 2), 1)
+    consumer = _FakeConsumer([first, second], stop_event)
+    real_insert_events = materializer.insert_events
+    attempted_event_ids = []
+
+    def _fail_first_write(conn, events):
+        attempted_event_ids.append([event["event_id"] for event in events])
+        if len(attempted_event_ids) == 1:
+            raise sqlite3.OperationalError("transient write failure")
+        return real_insert_events(conn, events)
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    monkeypatch.setattr(materializer, "insert_events", _fail_first_write)
+
+    state = materializer.ConsumerState()
+    materializer.consume_loop(state, stop_event)
+
+    rows = materializer.recent(db_path, 10)
+    assert attempted_event_ids == [["e1"], ["e1"]]
+    assert [row["event_id"] for row in rows] == ["e1"]
+    assert consumer.commits[0][0].offset == 1
+    assert consumer.closed is True
+
+
+def test_corrupt_db_recovery_replays_before_committed_group_offset(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "predictions.db"
+    db_path.write_bytes(b"not a sqlite database")
+    stop_event = threading.Event()
+    historical = _FakeMessage(_event("historical", 1), 0)
+    after_committed_offset = _FakeMessage(_event("future", 43), 42)
+    consumer = _FakeConsumer(
+        [after_committed_offset],
+        stop_event,
+        committed_offset=42,
+        replay_messages=[historical],
+    )
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+
+    materializer.consume_loop(materializer.ConsumerState(), stop_event)
+
+    rows = materializer.recent(db_path, 10)
+    assert consumer.assigned[0].offset == OFFSET_BEGINNING
+    assert [row["event_id"] for row in rows] == ["historical"]
+
+
+def test_recovery_only_rewinds_each_partition_once():
+    stop_event = threading.Event()
+    consumer = _FakeConsumer([], stop_event, committed_offset=42)
+
+    materializer._subscribe_for_projection(consumer, replay_from_beginning=True)
+    first_assignment = consumer.assigned[0].offset
+    consumer.on_assign(
+        consumer,
+        [TopicPartition(materializer.TOPIC_PREDICTIONS, 0, 7)],
+    )
+
+    assert first_assignment == OFFSET_BEGINNING
+    assert consumer.assigned[0].offset == 7
+
+
 # ---------------------------------------------------------------------------
 # recent()
 # ---------------------------------------------------------------------------
 
 
-def test_recent_returns_newest_first_by_source_offset(tmp_path):
+def test_recent_returns_newest_first_by_timestamp(tmp_path):
     conn = materializer.init_db(tmp_path / "test.db")
     events = [_event(f"e{i}", i) for i in [3, 1, 5, 2, 4]]
     materializer.insert_events(conn, events)
@@ -107,6 +278,43 @@ def test_recent_returns_newest_first_by_source_offset(tmp_path):
     rows = materializer.recent(conn, 10)
 
     assert [r["source_offset"] for r in rows] == [5, 4, 3, 2, 1]
+
+
+def test_recent_uses_global_timestamp_then_stable_partition_offset_ties(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [
+            _event("old-high-offset", 999, api_ts="2026-07-16T19:00:00+00:00"),
+            _event(
+                "p0-o9",
+                9,
+                source_partition=0,
+                api_ts="2026-07-16T19:01:00+00:00",
+            ),
+            _event(
+                "p1-o2",
+                2,
+                source_partition=1,
+                api_ts="2026-07-16T19:01:00+00:00",
+            ),
+            _event(
+                "p1-o3",
+                3,
+                source_partition=1,
+                api_ts="2026-07-16T19:01:00+00:00",
+            ),
+        ],
+    )
+
+    rows = materializer.recent(conn, 10)
+
+    assert [row["event_id"] for row in rows] == [
+        "p1-o3",
+        "p1-o2",
+        "p0-o9",
+        "old-high-offset",
+    ]
 
 
 def test_recent_via_path_matches_recent_via_connection(tmp_path):
@@ -128,6 +336,75 @@ def test_recent_respects_limit(tmp_path):
 
     assert len(rows) == 2
     assert [r["source_offset"] for r in rows] == [4, 3]
+
+
+def test_concurrent_read_connections_are_safe_during_writes(tmp_path):
+    db_path = tmp_path / "test.db"
+    materializer.init_db(db_path).close()
+    writer_done = threading.Event()
+    errors = []
+
+    def _write_rows():
+        conn = materializer.init_db(db_path)
+        try:
+            for index in range(50):
+                materializer.insert_events(
+                    conn,
+                    [
+                        _event(
+                            f"e{index}",
+                            index,
+                            api_ts=f"2026-07-16T19:00:{index:02d}+00:00",
+                        )
+                    ],
+                )
+        except Exception as exc:  # pragma: no cover - asserted through errors
+            errors.append(exc)
+        finally:
+            conn.close()
+            writer_done.set()
+
+    writer = threading.Thread(target=_write_rows)
+    writer.start()
+    while not writer_done.wait(0.001):
+        try:
+            materializer.recent(db_path, 10)
+        except Exception as exc:  # pragma: no cover - asserted through errors
+            errors.append(exc)
+            break
+    writer.join()
+
+    assert errors == []
+    assert len(materializer.recent(db_path, 100)) == 50
+
+
+def test_fastapi_recent_endpoint_enforces_actual_limit_contract(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    conn = materializer.init_db(db_path)
+    materializer.insert_events(conn, [_event(f"e{i}", i) for i in range(3)])
+    conn.close()
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    materializer._state.ready = True
+    client = TestClient(materializer.app)
+
+    assert client.get("/predictions/recent").json()["count"] == 3
+    assert client.get("/predictions/recent?limit=1").json()["count"] == 1
+    for query in ("limit=0", "limit=2001", "limit=not-an-int"):
+        assert client.get(f"/predictions/recent?{query}").status_code == 422
+
+
+def test_fastapi_recent_returns_503_without_creating_db_before_readiness(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "not-ready.db"
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    materializer._state.ready = False
+    client = TestClient(materializer.app, raise_server_exceptions=False)
+
+    response = client.get("/predictions/recent?limit=1")
+
+    assert response.status_code == 503
+    assert db_path.exists() is False
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +485,60 @@ def test_maybe_prune_keeps_only_newest_rows(tmp_path, monkeypatch):
     assert {r["source_offset"] for r in rows} == {5, 6, 7, 8, 9}
 
 
+def test_maybe_prune_uses_same_global_order_as_recent(tmp_path, monkeypatch):
+    conn = materializer.init_db(tmp_path / "test.db")
+    monkeypatch.setattr(materializer, "PRUNE_KEEP_ROWS", 2)
+    materializer.insert_events(
+        conn,
+        [
+            _event("old-high-offset", 999, api_ts="2026-07-16T19:00:00+00:00"),
+            _event(
+                "new-p0",
+                1,
+                source_partition=0,
+                api_ts="2026-07-16T19:01:00+00:00",
+            ),
+            _event(
+                "new-p1",
+                1,
+                source_partition=1,
+                api_ts="2026-07-16T19:01:00+00:00",
+            ),
+        ],
+    )
+
+    materializer.maybe_prune(conn, materializer.PRUNE_EVERY_N_INSERTS)
+
+    assert [row["event_id"] for row in materializer.recent(conn, 10)] == [
+        "new-p1",
+        "new-p0",
+    ]
+
+
+def test_consumer_preserves_prune_counter_remainder(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    messages = [_FakeMessage(_event(f"e{i}", i), i) for i in range(6)]
+    consumer = _FakeConsumer(messages, stop_event, commits_until_stop=3)
+    observed_counts = []
+
+    def _record_prune_count(conn, inserted_since_prune):
+        observed_counts.append(inserted_since_prune)
+        return inserted_since_prune >= 3
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 2)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "PRUNE_EVERY_N_INSERTS", 3)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    monkeypatch.setattr(materializer, "maybe_prune", _record_prune_count)
+
+    materializer.consume_loop(materializer.ConsumerState(), stop_event)
+
+    assert observed_counts == [2, 4, 3]
+
+
 # ---------------------------------------------------------------------------
 # health_snapshot()
 # ---------------------------------------------------------------------------
@@ -246,6 +577,155 @@ def test_health_snapshot_ok_false_when_consumer_not_alive(tmp_path):
     snapshot = materializer.health_snapshot(state, db_path)
 
     assert snapshot["ok"] is False
+
+
+def test_failed_write_does_not_advance_durable_health_timestamps(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    consumer = _FakeConsumer(
+        [_FakeMessage(_event("e1", 1), 0)],
+        stop_event,
+    )
+
+    def _fail_and_stop(conn, events):
+        stop_event.set()
+        raise sqlite3.OperationalError("write failed")
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    monkeypatch.setattr(materializer, "insert_events", _fail_and_stop)
+    state = materializer.ConsumerState()
+
+    materializer.consume_loop(state, stop_event)
+
+    assert state.last_event_ts is None
+    assert state.last_write_ts is None
+    assert state.write_errors == 1
+    assert consumer.commits == []
+
+
+def test_duplicate_and_malformed_only_batch_does_not_claim_a_write(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "predictions.db"
+    conn = materializer.init_db(db_path)
+    materializer.insert_events(conn, [_event("duplicate", 1)])
+    conn.close()
+    stop_event = threading.Event()
+    consumer = _FakeConsumer(
+        [
+            _FakeMessage(_event("duplicate", 1), 0),
+            _FakeMessage({"score": 0.5}, 1),
+        ],
+        stop_event,
+    )
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 2)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    state = materializer.ConsumerState()
+
+    materializer.consume_loop(state, stop_event)
+
+    assert state.last_event_ts is None
+    assert state.last_write_ts is None
+    assert state.consume_errors == 1
+    assert consumer.commits[0][0].offset == 2
+
+
+def test_non_eof_kafka_error_increments_consume_errors(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    consumer = _FakeConsumer(
+        [
+            _FakeErrorMessage(materializer.KafkaError._ALL_BROKERS_DOWN),
+            _FakeMessage(_event("e1", 1), 0),
+        ],
+        stop_event,
+    )
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    state = materializer.ConsumerState()
+
+    materializer.consume_loop(state, stop_event)
+
+    assert state.consume_errors == 1
+
+
+def test_consumer_initialization_failure_signals_ready_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "predictions.db"
+    conn = materializer.init_db(db_path)
+    stop_event = threading.Event()
+    ready_event = threading.Event()
+    consumer = _FakeConsumer([], stop_event)
+    consumer_config = {}
+
+    def _fail_startup(consumer_arg, bootstrap, timeout):
+        raise RuntimeError("Kafka unavailable")
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(
+        materializer,
+        "_init_db_with_recovery_status",
+        lambda path: (conn, False),
+    )
+
+    def _make_consumer(config):
+        consumer_config.update(config)
+        return consumer
+
+    monkeypatch.setattr(materializer, "Consumer", _make_consumer)
+    monkeypatch.setattr(materializer, "_wait_for_kafka", _fail_startup)
+    state = materializer.ConsumerState()
+
+    materializer.consume_loop(state, stop_event, ready_event)
+
+    assert ready_event.is_set()
+    assert state.ready is False
+    assert "Kafka unavailable" in state.startup_error
+    assert consumer.closed is True
+    assert (
+        consumer_config["socket.timeout.ms"] < materializer.THREAD_JOIN_TIMEOUT * 1000
+    )
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_lifespan_waits_for_consumer_readiness_and_joins_on_shutdown(monkeypatch):
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def _controlled_loop(state, stop_event, ready_event=None):
+        started.set()
+        time.sleep(0.05)
+        with state.lock:
+            state.ready = True
+            state.alive = True
+        if ready_event is not None:
+            ready_event.set()
+        stop_event.wait()
+        time.sleep(0.05)
+        with state.lock:
+            state.ready = False
+            state.alive = False
+        stopped.set()
+
+    monkeypatch.setattr(materializer, "consume_loop", _controlled_loop)
+    materializer._state.ready = False
+
+    with TestClient(materializer.app):
+        assert started.is_set()
+        assert materializer._state.ready is True
+
+    assert stopped.is_set()
 
 
 if __name__ == "__main__":
