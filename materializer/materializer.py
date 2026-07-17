@@ -443,11 +443,47 @@ def _offsets_after(messages) -> list[TopicPartition]:
     ]
 
 
+def probe_loop(
+    state: ConsumerState,
+    stop_event: threading.Event,
+    probe_broker=None,
+) -> None:
+    """Dedicated health-probe thread: sole owner of `state.broker_ok`.
+
+    Runs a fresh-client metadata probe every BROKER_HEALTHCHECK_INTERVAL_SEC
+    in its OWN thread, so broker health tracks reality within one probe
+    interval no matter what the consumer loop is doing — its synchronous
+    offset commit can block for the full group session timeout (~45s) when
+    the coordinator disappears, which starved an earlier in-loop probe.
+    Poll/commit errors in the consumer never touch the flag, so queued
+    transport errors can't hold health false after the broker recovers;
+    both transitions (up->down, down->up) are detected without restarting
+    anything.
+    """
+    if probe_broker is None:
+
+        def probe_broker():
+            return _probe_broker(KAFKA_BOOTSTRAP, BROKER_HEALTHCHECK_TIMEOUT_SEC)
+
+    while not stop_event.is_set():
+        broker_up = probe_broker()
+        with state.lock:
+            transition = state.broker_ok != broker_up
+            state.broker_ok = broker_up
+        if transition:
+            if broker_up:
+                log.warning(
+                    "Kafka broker probe recovered (bootstrap=%s)", KAFKA_BOOTSTRAP
+                )
+            else:
+                log.error("Kafka broker probe failed (bootstrap=%s)", KAFKA_BOOTSTRAP)
+        stop_event.wait(BROKER_HEALTHCHECK_INTERVAL_SEC)
+
+
 def consume_loop(
     state: ConsumerState,
     stop_event: threading.Event,
     ready_event: threading.Event | None = None,
-    probe_broker=None,
 ) -> None:
     """Background thread entrypoint: ticks.predictions -> SQLite read model.
 
@@ -456,18 +492,8 @@ def consume_loop(
     offsets — at-least-once delivery + the event_id primary key make replays
     harmless.
 
-    `state.broker_ok` is owned EXCLUSIVELY by the periodic fresh-client
-    probe (`probe_broker`, every BROKER_HEALTHCHECK_INTERVAL_SEC): poll and
-    commit errors are logged and counted but never touch the flag, so
-    queued transport errors can't hold health false after the broker has
-    recovered, and both transitions (up->down, down->up) are detected
-    within one probe interval without restarting the process.
+    Never writes `state.broker_ok` — that flag is owned by `probe_loop`.
     """
-    if probe_broker is None:
-
-        def probe_broker():
-            return _probe_broker(KAFKA_BOOTSTRAP, BROKER_HEALTHCHECK_TIMEOUT_SEC)
-
     conn = None
     consumer = None
     try:
@@ -494,7 +520,6 @@ def consume_loop(
 
         with state.lock:
             state.alive = True
-            state.broker_ok = True
             state.ready = True
             state.startup_error = None
         if ready_event is not None:
@@ -504,21 +529,8 @@ def consume_loop(
         pending_batch = None
         pending_events = None
         pending_persisted = False
-        next_broker_healthcheck = time.monotonic() + BROKER_HEALTHCHECK_INTERVAL_SEC
 
         while not stop_event.is_set():
-            if time.monotonic() >= next_broker_healthcheck:
-                broker_up = probe_broker()
-                with state.lock:
-                    state.broker_ok = broker_up
-                if not broker_up:
-                    log.error(
-                        "Kafka broker probe failed (bootstrap=%s)", KAFKA_BOOTSTRAP
-                    )
-                next_broker_healthcheck = (
-                    time.monotonic() + BROKER_HEALTHCHECK_INTERVAL_SEC
-                )
-
             if pending_batch is None:
                 batch = []
                 deadline = time.monotonic() + BATCH_WINDOW_SEC
@@ -625,7 +637,6 @@ def consume_loop(
     finally:
         with state.lock:
             state.alive = False
-            state.broker_ok = False
             state.ready = False
         if ready_event is not None:
             ready_event.set()
@@ -674,6 +685,13 @@ async def lifespan(app: FastAPI):
     _reset_state(_state)
     stop_event = threading.Event()
     ready_event = threading.Event()
+    probe_thread = threading.Thread(
+        target=probe_loop,
+        args=(_state, stop_event),
+        name="materializer-broker-probe",
+        daemon=True,
+    )
+    probe_thread.start()
     thread = threading.Thread(
         target=supervise_consumer,
         args=(_state, stop_event, ready_event),
@@ -690,6 +708,7 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(thread.join, THREAD_JOIN_TIMEOUT)
         if thread.is_alive():
             log.error("Materializer consumer did not stop after startup failure")
+        await asyncio.to_thread(probe_thread.join, THREAD_JOIN_TIMEOUT)
         detail = startup_error or "consumer readiness timed out"
         raise RuntimeError(f"Materializer startup failed: {detail}")
 
@@ -701,6 +720,12 @@ async def lifespan(app: FastAPI):
         if thread.is_alive():
             log.error(
                 "Materializer consumer did not stop within %.1fs",
+                THREAD_JOIN_TIMEOUT,
+            )
+        await asyncio.to_thread(probe_thread.join, THREAD_JOIN_TIMEOUT)
+        if probe_thread.is_alive():
+            log.error(
+                "Materializer broker probe did not stop within %.1fs",
                 THREAD_JOIN_TIMEOUT,
             )
 
