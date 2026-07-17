@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from confluent_kafka import Consumer, KafkaError, OFFSET_BEGINNING, TopicPartition
+from confluent_kafka.admin import AdminClient
 from fastapi import FastAPI, HTTPException
 
 logging.basicConfig(
@@ -370,6 +371,22 @@ def validate_limit(limit: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _probe_broker(bootstrap: str, timeout: float) -> bool:
+    """Fresh-client metadata probe of broker connectivity.
+
+    A NEW AdminClient per call is deliberate: librdkafka serves cached
+    metadata to long-lived clients, so `list_topics` on the long-lived
+    consumer keeps "succeeding" during a broker outage. A fresh client has
+    no cache, so success/failure here reflects real connectivity — bounding
+    both outage detection and recovery to one probe interval.
+    """
+    try:
+        AdminClient({"bootstrap.servers": bootstrap}).list_topics(timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
 def _wait_for_kafka(consumer: Consumer, bootstrap: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     last_exc: Exception | None = None
@@ -430,6 +447,7 @@ def consume_loop(
     state: ConsumerState,
     stop_event: threading.Event,
     ready_event: threading.Event | None = None,
+    probe_broker=None,
 ) -> None:
     """Background thread entrypoint: ticks.predictions -> SQLite read model.
 
@@ -437,7 +455,19 @@ def consume_loop(
     INSERT OR IGNOREs the batch in one transaction, then commits Kafka
     offsets — at-least-once delivery + the event_id primary key make replays
     harmless.
+
+    `state.broker_ok` is owned EXCLUSIVELY by the periodic fresh-client
+    probe (`probe_broker`, every BROKER_HEALTHCHECK_INTERVAL_SEC): poll and
+    commit errors are logged and counted but never touch the flag, so
+    queued transport errors can't hold health false after the broker has
+    recovered, and both transitions (up->down, down->up) are detected
+    within one probe interval without restarting the process.
     """
+    if probe_broker is None:
+
+        def probe_broker():
+            return _probe_broker(KAFKA_BOOTSTRAP, BROKER_HEALTHCHECK_TIMEOUT_SEC)
+
     conn = None
     consumer = None
     try:
@@ -478,16 +508,13 @@ def consume_loop(
 
         while not stop_event.is_set():
             if time.monotonic() >= next_broker_healthcheck:
-                try:
-                    consumer.list_topics(timeout=BROKER_HEALTHCHECK_TIMEOUT_SEC)
-                except Exception as exc:
-                    with state.lock:
-                        state.broker_ok = False
-                        state.consume_errors += 1
-                    log.error("Kafka broker healthcheck failed: %s", exc)
-                else:
-                    with state.lock:
-                        state.broker_ok = True
+                broker_up = probe_broker()
+                with state.lock:
+                    state.broker_ok = broker_up
+                if not broker_up:
+                    log.error(
+                        "Kafka broker probe failed (bootstrap=%s)", KAFKA_BOOTSTRAP
+                    )
                 next_broker_healthcheck = (
                     time.monotonic() + BROKER_HEALTHCHECK_INTERVAL_SEC
                 )
@@ -502,7 +529,6 @@ def consume_loop(
                     if msg.error():
                         if msg.error().code() != KafkaError._PARTITION_EOF:
                             with state.lock:
-                                state.broker_ok = False
                                 state.consume_errors += 1
                             log.error("Kafka error: %s", msg.error())
                         continue
@@ -551,7 +577,6 @@ def consume_loop(
                 committed = consumer.commit(offsets=offsets, asynchronous=False)
             except Exception as exc:
                 with state.lock:
-                    state.broker_ok = False
                     state.consume_errors += 1
                 log.error("Kafka offset commit failed, will retry: %s", exc)
                 stop_event.wait(COMMIT_RETRY_BACKOFF_SEC)
@@ -571,7 +596,6 @@ def consume_loop(
             )
             if commit_errors:
                 with state.lock:
-                    state.broker_ok = False
                     state.consume_errors += len(commit_errors)
                 for partition in commit_errors:
                     log.error(

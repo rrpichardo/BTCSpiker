@@ -381,6 +381,67 @@ def test_partition_commit_error_retries_same_persisted_batch(tmp_path, monkeypat
     assert [row["event_id"] for row in materializer.recent(db_path, 10)] == ["e1"]
 
 
+def _run_loop_with_probe_sequence(tmp_path, monkeypatch, probe_results, messages=()):
+    """Run consume_loop with an injected broker probe that returns the given
+    sequence of results, recording broker_ok as observed at each probe call
+    (i.e. the state left by the PREVIOUS probe). Stops after the sequence.
+    """
+    stop_event = threading.Event()
+    consumer = _FakeConsumer(list(messages), stop_event, commits_until_stop=10**9)
+    state = materializer.ConsumerState()
+    results = list(probe_results)
+    observed = []
+
+    def fake_probe():
+        with state.lock:
+            observed.append(state.broker_ok)
+        result = results.pop(0)
+        if not results:
+            stop_event.set()
+        return result
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(tmp_path / "p.db"))
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "BROKER_HEALTHCHECK_INTERVAL_SEC", 0.0)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+
+    materializer.consume_loop(state, stop_event, probe_broker=fake_probe)
+    return observed
+
+
+def test_broker_outage_marks_health_not_ok_within_one_probe_interval(
+    tmp_path, monkeypatch
+):
+    # Probe call 1 fails (broker down); probe call 2 observes the state the
+    # failure left behind: broker_ok must already be False.
+    observed = _run_loop_with_probe_sequence(tmp_path, monkeypatch, [False, True])
+    assert observed == [True, False]
+
+
+def test_broker_recovery_restores_health_without_restart(tmp_path, monkeypatch):
+    # Down (False), then recovered (True); the final probe call observes the
+    # state the successful probe left behind: broker_ok must be True again,
+    # in the SAME consume_loop invocation — no process/thread restart.
+    observed = _run_loop_with_probe_sequence(
+        tmp_path, monkeypatch, [False, True, False]
+    )
+    assert observed == [True, False, True]
+
+
+def test_poll_transport_errors_do_not_own_broker_health(tmp_path, monkeypatch):
+    # Queued transport-error events from the long-lived consumer must not
+    # flip broker_ok — otherwise stale queued errors keep health false after
+    # the broker has recovered (the sticky-false failure mode). The fresh
+    # probe is the flag's sole owner.
+    error_messages = [_FakeErrorMessage(code=-195) for _ in range(3)]  # _TRANSPORT
+    observed = _run_loop_with_probe_sequence(
+        tmp_path, monkeypatch, [True, True], messages=error_messages
+    )
+    # Both probe calls observe broker_ok True: startup True survives the
+    # transport errors polled between the two probe calls.
+    assert observed == [True, True]
+
+
 def test_offsets_after_returns_maximum_next_offset_per_partition():
     messages = [
         _FakeMessage(_event("p1-low", 2), 2, partition=1),
