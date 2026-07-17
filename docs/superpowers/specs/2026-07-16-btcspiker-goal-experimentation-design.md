@@ -104,9 +104,10 @@ The goal may use free public historical data, the existing Coinbase live feed, a
 
 Acquisition priority:
 
-1. Recover or import compatible tick/trade history with event timestamps and source identifiers.
-2. Continue append-only Coinbase collection for new regimes.
-3. Add public cross-venue trades, spread proxies, volume, funding, or open-interest data only when timestamps and licensing permit reproducible use.
+1. Backfill Coinbase BTC-USD trades through the public Exchange endpoint `GET https://api.exchange.coinbase.com/products/BTC-USD/trades?limit=1000`, following the `CB-AFTER` cursor into older pages. This creates target-aligned trade history but not historical quote features.
+2. Continue append-only Coinbase collection through the unauthenticated Advanced Trade `ticker`, `market_trades`, and `level2` WebSocket channels. This is the canonical source for a fully deployable quote-and-trade corpus.
+3. Download checksum-verified Binance public-data archives for BTCUSDT spot/futures trades and selected derivatives context. Treat them only as external as-of features; never substitute a Binance-derived target for Coinbase BTC-USD.
+4. Add another free source only after recording its official documentation, terms, timestamp semantics, and deterministic retrieval procedure in the dataset manifest.
 
 The initial credible corpus target is at least 30 calendar days covering multiple volatility and liquidity regimes. If compatible historical tick data cannot be obtained, the goal must build and start the live collector, then clearly mark model results as provisional until the corpus reaches the minimum.
 
@@ -127,6 +128,7 @@ Quality gates fail closed on schema mismatch, timestamp regression, overlapping 
 
 - Keep the target horizon fixed at 60 seconds.
 - Keep the label threshold fixed at `0.000048` for direct comparison with the current model.
+- Version the current operational target as trade-price realized volatility because `features/featurizer.py` passes last-trade `price` into `compute_future_vol`. Correct the existing midprice wording in the feature specification; do not silently change the target calculation.
 - Do not retune the label definition during the model tournament.
 - Compute every feature strictly from data at or before the prediction timestamp.
 - Keep future volatility and `vol_spike` out of model inputs.
@@ -306,6 +308,8 @@ The long-running goal follows these checkpoints:
 7. Register as Staging, export artifacts to iCloud, run replay/API verification, and write the final comparison report.
 
 The goal pauses for a user decision if it needs paid data, paid compute, destructive cleanup, Production promotion, or a target-definition change.
+
+If fewer than 30 days of target-aligned quote-and-trade data is available after backfill, the goal completes the framework and provisional trade-only experiments, leaves the Coinbase collector running, records the exact resume condition in MLflow and the final report, and pauses. Resume the same task with `/goal resume` after the manifest reaches the data threshold.
 
 ## Stop Conditions
 
