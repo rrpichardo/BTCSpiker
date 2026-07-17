@@ -13,12 +13,16 @@ function degradedReasons({ health, healthError, predError, predLastUpdated }) {
   if (healthError) reasons.push("the materializer health check failed");
   if (health?.ok === false) reasons.push("the materializer reports unhealthy");
 
-  if (health?.last_write_ts) {
-    const writeAge = ageMs(health.last_write_ts);
-    if (writeAge === null) {
-      reasons.push("the last-write timestamp is invalid");
-    } else if (writeAge > STALE_MS) {
-      reasons.push(`the prediction log has not advanced for ${Math.floor(writeAge / 1000)}s`);
+  if (health?.ok === true) {
+    if (typeof health.last_write_ts !== "string" || !health.last_write_ts.trim()) {
+      reasons.push("the materializer has no durable-write timestamp");
+    } else {
+      const writeAge = ageMs(health.last_write_ts);
+      if (writeAge === null) {
+        reasons.push("the last-write timestamp is invalid");
+      } else if (writeAge > STALE_MS) {
+        reasons.push(`the prediction log has not advanced for ${Math.floor(writeAge / 1000)}s`);
+      }
     }
   }
 

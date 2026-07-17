@@ -86,8 +86,6 @@ export default function SettingRow({ setting }) {
         </div>
       </div>
 
-      {setting.note && <p className="setting-note">{setting.note}</p>}
-
       <div className="setting-editable-via">
         <input
           type="text"
