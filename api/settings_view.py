@@ -5,13 +5,13 @@ Shows, per setting, the value saved on disk (.env / config.yaml) next to the
 value the running process actually has ("active"), plus how to apply a
 changed saved value. This module must not import `api.main` at module load
 time: `api/main.py` imports this module's router, so a top-level import here
-would be circular. The one place we need data from `api.main` (the
-MODEL_STAGE cross-check) goes through `_get_model_source()`, which imports
-lazily inside the function so tests can monkeypatch it instead of triggering
-api.main's module-level model loading.
+would be circular. Active API values are read lazily from `api.main`'s
+startup constants.
 """
 
 import os
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import yaml
@@ -21,15 +21,6 @@ router = APIRouter()
 
 ENV_FILE_DEFAULT = ".env"
 CONFIG_FILE_DEFAULT = "config.yaml"
-
-# Defaults must mirror api/main.py's own os.getenv(...) defaults exactly, so
-# "active_value" reflects what that process actually resolved.
-_ACTIVE_ENV_DEFAULTS = {
-    "MODEL_VARIANT": "ml",
-    "BASELINE_VOL_THRESHOLD": "0.000048",
-    "MODEL_STAGE": "Production",
-    "MODEL_NAME": "btc-volatility-lr",
-}
 
 _EDIT_API = "edit .env, then: docker compose up -d api"
 _EDIT_INGESTOR = "edit .env, then: docker compose up -d ingestor"
@@ -154,41 +145,61 @@ def _load_saved_features() -> dict:
         return {}
     with open(path) as f:
         data = yaml.safe_load(f) or {}
-    return data.get("features") or {}
+    if not isinstance(data, Mapping):
+        return {}
+    features = data.get("features") or {}
+    return dict(features) if isinstance(features, Mapping) else {}
 
 
-def _active_value(key: str) -> str | None:
-    if key in _ACTIVE_ENV_DEFAULTS:
-        value = os.environ.get(key, _ACTIVE_ENV_DEFAULTS[key])
-        return value.lower() if key == "MODEL_VARIANT" else value
-    if key == "REPLAY_SPEED":
-        # Consumed by the ingestor container, not this process — unset here
-        # simply means "not observable from the api".
-        return os.environ.get("REPLAY_SPEED")
-    return None  # config.yaml keys: the api process cannot introspect them
-
-
-def _apply_state(saved_value: str | None, active_value: str | None) -> str:
-    if saved_value is None or active_value is None:
-        return "unknown"
-    return "applied" if saved_value == active_value else "restart_required"
-
-
-def _get_model_source():
-    """Return what /version would report as model source ('mlflow' or
-    'pickle'), or None if it can't be determined. Imports api.main lazily —
-    only inside this function — so importing this module never triggers
-    api.main's module-level model loading. Tests monkeypatch this function
-    directly instead of exercising the import."""
+def _get_active_api_settings() -> dict[str, str | None]:
+    """Snapshot constants already loaded by api.main, without re-reading env."""
     try:
         from api import main
 
-        return main.model_source
+        return {
+            "MODEL_VARIANT": str(main.MODEL_VARIANT),
+            "BASELINE_VOL_THRESHOLD": str(main.BASELINE_VOL_THRESHOLD),
+            "MODEL_STAGE": main.MODEL_STAGE if main.model_source == "mlflow" else None,
+            "MODEL_NAME": str(main.MODEL_NAME),
+        }
     except Exception:
+        # Outside the FastAPI app (or after failed startup), these values are
+        # genuinely unknown. Re-reading mutable env would misreport them.
+        return {
+            "MODEL_VARIANT": None,
+            "BASELINE_VOL_THRESHOLD": None,
+            "MODEL_STAGE": None,
+            "MODEL_NAME": None,
+        }
+
+
+def _canonical_value(key: str, value: str | None):
+    if value is None:
         return None
+    if key == "MODEL_VARIANT":
+        return value.lower()
+    if key in {"BASELINE_VOL_THRESHOLD", "REPLAY_SPEED"}:
+        try:
+            return Decimal(value)
+        except InvalidOperation:
+            return value
+    return value
 
 
-def _build_entry(reg: dict, saved_env: dict[str, str], saved_features: dict) -> dict:
+def _apply_state(key: str, saved_value: str | None, active_value: str | None) -> str:
+    if saved_value is None or active_value is None:
+        return "unknown"
+    saved = _canonical_value(key, saved_value)
+    active = _canonical_value(key, active_value)
+    return "applied" if saved == active else "restart_required"
+
+
+def _build_entry(
+    reg: dict,
+    saved_env: dict[str, str],
+    saved_features: dict,
+    active_api_settings: dict[str, str | None],
+) -> dict:
     key = reg["key"]
 
     if "config_key" in reg:
@@ -197,12 +208,8 @@ def _build_entry(reg: dict, saved_env: dict[str, str], saved_features: dict) -> 
     else:
         saved_value = saved_env.get(key)
 
-    active_value = _active_value(key)
-    if key == "MODEL_STAGE" and _get_model_source() != "mlflow":
-        # Mirrors /version: a requested registry stage is not active when
-        # startup fell back to the local pickle (or source is unknown).
-        active_value = None
-    apply_state = _apply_state(saved_value, active_value)
+    active_value = active_api_settings.get(key)
+    apply_state = _apply_state(key, saved_value, active_value)
 
     return {
         "key": key,
@@ -221,5 +228,9 @@ def get_settings():
     """Return the fixed settings registry with saved vs active values."""
     saved_env = _load_saved_env()
     saved_features = _load_saved_features()
-    settings = [_build_entry(reg, saved_env, saved_features) for reg in REGISTRY]
+    active_api_settings = _get_active_api_settings()
+    settings = [
+        _build_entry(reg, saved_env, saved_features, active_api_settings)
+        for reg in REGISTRY
+    ]
     return {"settings": settings}

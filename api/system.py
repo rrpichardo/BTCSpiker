@@ -21,6 +21,7 @@ from fastapi import APIRouter
 router = APIRouter()
 
 SERVICE_NAMES = ["api", "grafana", "prometheus", "mlflow", "materializer"]
+MAX_RESPONSE_BYTES = 64 * 1024
 
 _DEFAULT_PROBE_URLS = {
     "api": "http://localhost:8000/health",
@@ -85,9 +86,16 @@ def _do_probe(url: str, timeout: float) -> tuple[bool, float | None, str, bytes 
     start = time.monotonic()
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+            body = resp.read(MAX_RESPONSE_BYTES + 1)
             status = resp.getcode()
         latency_ms = (time.monotonic() - start) * 1000
+        if len(body) > MAX_RESPONSE_BYTES:
+            return (
+                False,
+                latency_ms,
+                f"response too large (limit {MAX_RESPONSE_BYTES} bytes)",
+                None,
+            )
         if status == 200:
             return True, latency_ms, "ok", body
         return False, latency_ms, f"HTTP {status}", body
@@ -102,7 +110,7 @@ def _check_materializer(body: bytes | None) -> tuple[bool, bool, str]:
      "rows_total": int, "consume_errors": int, "write_errors": int}
 
     Returns (ok, degraded, detail). `degraded` means the service is up but
-    the prediction log has stalled while fresh events show the pipeline is running.
+    the log has stalled while fresh events show the pipeline is running.
     """
     if body is None:
         return False, False, "no response body"
@@ -111,23 +119,76 @@ def _check_materializer(body: bytes | None) -> tuple[bool, bool, str]:
     except Exception as exc:
         return False, False, f"invalid JSON: {exc}"
 
-    payload_ok = bool(payload.get("ok"))
+    if not isinstance(payload, dict):
+        return False, False, "invalid materializer health: expected JSON object"
+
+    required_fields = {
+        "ok",
+        "last_event_ts",
+        "last_write_ts",
+        "rows_total",
+        "consume_errors",
+        "write_errors",
+    }
+    missing = required_fields - payload.keys()
+    if missing:
+        return (
+            False,
+            False,
+            f"invalid materializer health: missing fields {sorted(missing)}",
+        )
+    if type(payload["ok"]) is not bool:
+        return False, False, "invalid materializer health: ok must be a boolean"
+    for field in ("rows_total", "consume_errors", "write_errors"):
+        value = payload[field]
+        if type(value) is not int:
+            return (
+                False,
+                False,
+                f"invalid materializer health: {field} must be an integer",
+            )
+        if value < 0:
+            return (
+                False,
+                False,
+                f"invalid materializer health: {field} must be non-negative",
+            )
+
+    parsed_timestamps: dict[str, datetime | None] = {}
+    for field in ("last_event_ts", "last_write_ts"):
+        raw_ts = payload[field]
+        if raw_ts is None:
+            parsed_timestamps[field] = None
+            continue
+        if not isinstance(raw_ts, str):
+            return (
+                False,
+                False,
+                f"invalid materializer health: {field} must be a timestamp or null",
+            )
+        try:
+            parsed = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+        except ValueError:
+            return False, False, f"invalid materializer health: invalid {field}"
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return (
+                False,
+                False,
+                f"invalid materializer health: {field} must include a timezone",
+            )
+        parsed_timestamps[field] = parsed
+
+    payload_ok = payload["ok"]
     detail = "ok" if payload_ok else "materializer reports ok=false"
 
-    def _age_seconds(raw_ts) -> float | None:
-        if not raw_ts:
+    def _age_seconds(timestamp: datetime | None) -> float | None:
+        if timestamp is None:
             return None
-        try:
-            ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            return (datetime.now(timezone.utc) - ts).total_seconds()
-        except (ValueError, TypeError):
-            return None
+        return (datetime.now(timezone.utc) - timestamp).total_seconds()
 
     stale_seconds = _materializer_stale_seconds()
-    event_age = _age_seconds(payload.get("last_event_ts"))
-    write_age = _age_seconds(payload.get("last_write_ts"))
+    event_age = _age_seconds(parsed_timestamps["last_event_ts"])
+    write_age = _age_seconds(parsed_timestamps["last_write_ts"])
     pipeline_running = (
         payload_ok and event_age is not None and event_age <= stale_seconds
     )
@@ -179,8 +240,27 @@ def _check_service(name: str) -> dict:
 
 
 def _compute_status() -> dict:
+    timeout = _probe_timeout()
     futures = {name: _EXECUTOR.submit(_check_service, name) for name in SERVICE_NAMES}
-    services = [futures[name].result() for name in SERVICE_NAMES]
+    done, _ = concurrent.futures.wait(futures.values(), timeout=timeout)
+
+    services = []
+    for name in SERVICE_NAMES:
+        future = futures[name]
+        if future in done:
+            services.append(future.result())
+            continue
+        future.cancel()
+        services.append(
+            {
+                "name": name,
+                "ok": False,
+                "degraded": False,
+                "latency_ms": round(timeout * 1000, 1),
+                "detail": f"probe round timed out after {timeout:g}s",
+                "open_url": _open_url(name),
+            }
+        )
     return {
         "services": services,
         "checked_at": datetime.now(timezone.utc).isoformat(),
