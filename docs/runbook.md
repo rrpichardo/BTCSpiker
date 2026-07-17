@@ -23,10 +23,12 @@ The canonical drift analysis is `handoff/reports/train_vs_test.html`. See `docs/
 ## Startup (cold)
 
 ```bash
-cp .env.example .env                   # optional — only needed if overriding defaults; plain `docker compose up -d` works on a fresh clone
+cp .env.example .env                   # required — mounted read-only by the API settings view
 docker compose up -d                   # ~30s for Kafka healthcheck to go green
-docker compose ps                      # 9 long-running services should be Up; kafka-init/mlflow-init should show Exited (0)
+docker compose ps                      # 11 long-running services should be Up; kafka-init/mlflow-init should show Exited (0)
 curl http://localhost:8000/health      # → {"status":"ok"}
+curl http://localhost:8090/health      # → materializer status and row/error counts
+curl -fsS http://localhost:3001/ >/dev/null && echo "UI reachable"
 ```
 
 ### First-Time Setup
@@ -61,7 +63,9 @@ plain `docker compose up -d` recovers without any manual cleanup.
 
 Open dashboards:
 
+- Web UI: http://localhost:3001
 - API metrics: http://localhost:8000/metrics
+- Materializer health: http://localhost:8090/health
 - Prometheus: http://localhost:9090 (Status → Targets should show all `up`)
 - Grafana: http://localhost:3000 → dashboard "BTC Volatility Detector — API"
 - MLflow: http://localhost:5001
@@ -90,11 +94,16 @@ not raw Coinbase tick messages.
 
 Replay mode is now truly end-to-end inside Compose: `ingestor` produces
 `ticks.raw`, `featurizer` produces `ticks.features`, and `predict-bridge`
-automatically POSTs each feature row into `/predict`. You can confirm that hop
-without the test harness:
+automatically POSTs each feature row into `/predict` and publishes the result to
+`ticks.predictions`. The `materializer` consumes those prediction events into
+the SQLite read model served to the UI. Kafka is the source of truth; SQLite is
+a disposable projection rebuilt by replaying the topic. You can confirm the
+path without the test harness:
 
 ```bash
 docker compose logs --tail=20 predict-bridge
+curl -s http://localhost:8090/health | jq .
+curl -s http://localhost:3001/api/predictions/recent | jq '{count}'
 curl -s "http://localhost:9090/api/v1/query?query=sum(predict_requests_total)" | jq .
 ```
 
@@ -197,18 +206,41 @@ docker compose up -d api
 | `featurizer` runs but `ticks.features` offset stays at 0 | First 60 s of ticks are still in the label-delay buffer | Wait — labels emit only after `horizon_sec` (60 s) of future history. Confirm with `docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic ticks.features --time -1` |
 | `predict-bridge` logs repeated 5xx / connection errors | API is unhealthy or still starting | `docker compose restart api predict-bridge` and check `curl http://localhost:8000/health` |
 | `predict_requests_total` stays flat while `ticks.features` grows | The bridge is not consuming or is stuck on an uncommitted message | Check `docker compose logs predict-bridge`; if needed restart `docker compose restart predict-bridge` |
+| Materializer receives fresh events but `last_write_ts` is stale | SQLite writes are stalled or failing | Check `curl -s http://localhost:8090/health | jq .` and `docker compose logs materializer`; restart the service, then use the read-model rebuild procedure below if it remains stalled. |
+| UI returns `502 Bad Gateway` | The API or materializer nginx upstream is down/unhealthy | Check `curl -f http://localhost:8000/health`, `curl -f http://localhost:8090/health`, and `docker compose ps`; inspect `docker compose logs ui api materializer` before restarting the unhealthy service. |
 | `/predict` returns 500 with `Model not found` | Volume mount didn't pick up `lr_pipeline.pkl` | Rebuild API: `docker compose up -d --build api` |
 | Grafana panels say "No data" | Prometheus hasn't scraped yet, or `api` job is `down` | Visit http://localhost:9090/targets and check the `api` row. If `down`, restart with `docker compose restart prometheus` |
 | Consumer-lag panel empty | `kafka-exporter` not up | `docker compose up -d kafka-exporter`; check logs |
 
 ## Recovery Procedures
 
-**Full reset (loses Kafka data + Grafana dashboards state, keeps source code):**
+**Full reset (loses Kafka data, the SQLite read model, and dashboard state; keeps source code):**
 
 ```bash
 docker compose down -v
 docker compose up -d
 ```
+
+**Rebuild only the disposable predictions read model:**
+
+Capture the materializer's named volume before removing its container, then
+delete only that volume and recreate the service. The new empty projection
+causes the materializer to replay retained `ticks.predictions` events from
+Kafka.
+
+```bash
+PREDICTIONS_VOLUME=$(docker inspect "$(docker compose ps -q materializer)" \
+  --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')
+docker compose stop materializer
+docker compose rm -f materializer
+docker volume rm "$PREDICTIONS_VOLUME"
+docker compose up -d materializer
+curl -s http://localhost:8090/health | jq .
+```
+
+This rebuild cannot recover prediction events that were also removed from
+Kafka. Do not treat `predictions.db` as an independent backup or source of
+truth.
 
 **Restart one component:**
 
@@ -224,6 +256,10 @@ docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
     --broker-list localhost:9092 --topic ticks.raw --time -1
 docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
     --broker-list localhost:9092 --topic ticks.features --time -1
+docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
+    --broker-list localhost:9092 --topic ticks.predictions --time -1
+curl -s http://localhost:8090/health | jq .
+curl -s http://localhost:3001/api/predictions/recent | jq '{count}'
 curl -s "http://localhost:9090/api/v1/query?query=sum(predict_requests_total)" | jq .
 ```
 
@@ -239,6 +275,6 @@ python scripts/drift_report.py \
 ## Shutdown
 
 ```bash
-docker compose down                    # keeps volumes (Kafka, MLflow, Grafana state)
+docker compose down                    # keeps named volumes, including predictions-data
 docker compose down -v                 # nukes everything
 ```

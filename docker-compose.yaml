@@ -4,7 +4,7 @@
 #
 # This is the runtime entrypoint for the project.
 # Run from repo root:
-#   cp .env.example .env   # optional: override defaults
+#   cp .env.example .env   # required: mounted read-only by the api
 #   docker compose up -d
 #
 # Services overview and healthcheck strategy
@@ -19,13 +19,16 @@
 # featurizer     — Rolling-feature consumer (ticks.raw → ticks.features); same reasoning
 # predict-bridge — Runtime consumer (ticks.features → /predict); retries 5xx/network
 #                  failures and commits offsets only after the API hop succeeds
+# materializer   — Kafka-backed predictions read model; healthcheck via python
+#                  urllib → /health
+# ui             — nginx-served web UI + same-origin API proxy; healthcheck via wget
 # kafka-exporter — Prometheus exporter; built from scratch image, no shell/wget
 #                  available for CMD-style healthcheck — omitted intentionally
 # prometheus     — Metrics collector; healthcheck via wget → /-/healthy
 # grafana        — Dashboard; healthcheck via wget → /api/health (checks DB ready)
 #
-# Env vars are documented in .env.example. All defaults are set so the stack
-# runs out-of-the-box without a .env file present.
+# Env vars are documented in .env.example. The .env file must exist because the
+# api mounts it read-only to report saved settings alongside active settings.
 # =============================================================================
 
 services:
@@ -156,6 +159,21 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MODEL_NAME: ${MODEL_NAME:-btc-volatility-lr}
       MODEL_STAGE: ${MODEL_STAGE:-Production}
+      SETTINGS_ENV_FILE: ${SETTINGS_ENV_FILE:-/app/runtime/.env}
+      SETTINGS_CONFIG_FILE: ${SETTINGS_CONFIG_FILE:-/app/runtime/config.yaml}
+      SYSTEM_PROBE_API_URL: ${SYSTEM_PROBE_API_URL:-http://localhost:8000/health}
+      SYSTEM_PROBE_GRAFANA_URL: ${SYSTEM_PROBE_GRAFANA_URL:-http://grafana:3000/api/health}
+      SYSTEM_PROBE_PROMETHEUS_URL: ${SYSTEM_PROBE_PROMETHEUS_URL:-http://prometheus:9090/-/healthy}
+      SYSTEM_PROBE_MLFLOW_URL: ${SYSTEM_PROBE_MLFLOW_URL:-http://mlflow:5000/health}
+      SYSTEM_PROBE_MATERIALIZER_URL: ${SYSTEM_PROBE_MATERIALIZER_URL:-http://materializer:8090/health}
+      SYSTEM_OPEN_API_URL: ${SYSTEM_OPEN_API_URL:-http://localhost:8000/docs}
+      SYSTEM_OPEN_GRAFANA_URL: ${SYSTEM_OPEN_GRAFANA_URL:-http://localhost:3000}
+      SYSTEM_OPEN_PROMETHEUS_URL: ${SYSTEM_OPEN_PROMETHEUS_URL:-http://localhost:9090}
+      SYSTEM_OPEN_MLFLOW_URL: ${SYSTEM_OPEN_MLFLOW_URL:-http://localhost:5001}
+      SYSTEM_OPEN_MATERIALIZER_URL: ${SYSTEM_OPEN_MATERIALIZER_URL:-http://localhost:8090/health}
+      SYSTEM_PROBE_TIMEOUT: ${SYSTEM_PROBE_TIMEOUT:-2}
+      SYSTEM_STATUS_CACHE_SECONDS: ${SYSTEM_STATUS_CACHE_SECONDS:-5}
+      SYSTEM_MATERIALIZER_STALE_SECONDS: ${SYSTEM_MATERIALIZER_STALE_SECONDS:-60}
     # Mount the shared MLflow artifact volume so the API can resolve
     # `models:/...` URIs directly from /mlruns/artifacts on disk. Without this
     # mount, the registry lookup still succeeds over REST but the artifact
@@ -165,6 +183,8 @@ services:
     # a read-only mount causes an Errno 30 and the same silent pickle fallback.
     volumes:
       - mlflow-data:/mlruns
+      - ./.env:/app/runtime/.env:ro
+      - ./config.yaml:/app/runtime/config.yaml:ro
     depends_on:
       kafka:
         condition: service_healthy
@@ -262,6 +282,7 @@ services:
       KAFKA_BOOTSTRAP: kafka:29092
     volumes:
       - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
     command:
       - python
       - -u
@@ -305,6 +326,55 @@ services:
         limits:
           memory: 512M
           cpus: "0.5"
+    restart: on-failure
+
+  # ---- Prediction read model: ticks.predictions → SQLite + HTTP ----
+  # Kafka is the source of truth; this named-volume SQLite database is a
+  # disposable projection that the materializer rebuilds by replaying Kafka.
+  materializer:
+    build:
+      context: .
+      dockerfile: materializer/Dockerfile
+    ports:
+      - "8090:8090"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_PREDICTIONS: ticks.predictions
+      KAFKA_GROUP_ID: materializer
+      PREDICTIONS_DB_PATH: /data/predictions.db
+    volumes:
+      - predictions-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: on-failure
+
+  # ---- Web UI + same-origin proxy ----
+  ui:
+    build:
+      context: ui
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
+    depends_on:
+      api:
+        condition: service_healthy
+      materializer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: on-failure
 
   # ---- Kafka exporter (consumer-group lag → Prometheus) ----
@@ -378,3 +448,4 @@ volumes:
   mlflow-data:
   prometheus-data:
   grafana-data:
+  predictions-data:

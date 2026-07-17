@@ -41,7 +41,8 @@ jobs:
       - name: Wait for stack to be healthy
         run: |
           for i in {1..60}; do
-            if curl -sf http://localhost:8000/health; then
+            if curl -sf http://localhost:8000/health >/dev/null && \
+               curl -sf http://localhost:3001/ >/dev/null; then
               exit 0
             fi
             sleep 2
@@ -58,6 +59,11 @@ jobs:
 
       - name: Run replay integration test
         run: pytest tests/test_replay_integration.py -v --tb=short --retries 2
+
+      - name: Assert predictions reach the UI proxy
+        run: |
+          curl -sf http://localhost:3001/api/predictions/recent \
+            | jq -e '.count > 0 and (.predictions | length > 0)'
 
       - name: Dump logs on failure
         if: failure()
