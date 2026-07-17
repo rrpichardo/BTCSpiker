@@ -202,6 +202,7 @@ docker compose up -d api
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `kafka` container restarts in a loop | Stale KRaft volume after image upgrade | `docker compose down -v` then `docker compose up -d` (wipes Kafka volume, OK in replay mode) |
+| Pipeline silent after a Kafka outage/restart: workers show `Up` but no new messages flow (logs show `SESSTMOUT`/`_MSG_TIMED_OUT` then nothing) | The long-running `ingestor`, `featurizer`, and `predict-bridge` Kafka clients can wedge after the broker goes away and comes back — the process stays alive, so `restart: on-failure` never fires | `docker compose restart ingestor featurizer predict-bridge`. The materializer detects this itself (its `/health` probe goes `ok: false` within ~6 s and recovers automatically); the other workers have no health probe and need the manual restart. |
 | `ingestor` exits with `Kafka bootstrap … not reachable` | Started before `kafka-init` finished | `docker compose restart ingestor` (the service has `restart: on-failure` so it usually self-heals) |
 | `featurizer` runs but `ticks.features` offset stays at 0 | First 60 s of ticks are still in the label-delay buffer | Wait — labels emit only after `horizon_sec` (60 s) of future history. Confirm with `docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic ticks.features --time -1` |
 | `predict-bridge` logs repeated 5xx / connection errors | API is unhealthy or still starting | `docker compose restart api predict-bridge` and check `curl http://localhost:8000/health` |
