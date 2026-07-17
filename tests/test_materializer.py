@@ -69,6 +69,14 @@ class _FakeErrorMessage:
         return self._error
 
 
+class _FakeCommittedPartition:
+    def __init__(self, topic, partition, offset, error=None):
+        self.topic = topic
+        self.partition = partition
+        self.offset = offset
+        self.error = error
+
+
 class _FakeConsumer:
     def __init__(
         self,
@@ -78,14 +86,20 @@ class _FakeConsumer:
         committed_offset=0,
         replay_messages=None,
         commits_until_stop=1,
+        commit_outcomes=None,
+        pre_commit_rebalance_offset=None,
     ):
         self.messages = list(messages)
         self.replay_messages = list(replay_messages or [])
         self.stop_event = stop_event
         self.committed_offset = committed_offset
         self.commits_until_stop = commits_until_stop
+        self.commit_outcomes = list(commit_outcomes or [])
+        self.pre_commit_rebalance_offset = pre_commit_rebalance_offset
         self.assigned = []
+        self.assignment_history = []
         self.commits = []
+        self.successful_commits = 0
         self.closed = False
 
     def list_topics(self, timeout):
@@ -102,6 +116,7 @@ class _FakeConsumer:
 
     def assign(self, partitions):
         self.assigned = list(partitions)
+        self.assignment_history.append(list(partitions))
         if any(partition.offset == OFFSET_BEGINNING for partition in partitions):
             self.messages = list(self.replay_messages)
 
@@ -112,9 +127,23 @@ class _FakeConsumer:
 
     def commit(self, message=None, offsets=None, asynchronous=True):
         self.commits.append(offsets)
-        if len(self.commits) >= self.commits_until_stop:
+        if (
+            len(self.commits) == 1
+            and self.pre_commit_rebalance_offset is not None
+            and self.on_assign is not None
+        ):
+            self.on_assign(
+                self,
+                [TopicPartition(self.topics[0], 0, self.pre_commit_rebalance_offset)],
+            )
+        outcome = self.commit_outcomes.pop(0) if self.commit_outcomes else offsets
+        if isinstance(outcome, Exception):
+            raise outcome
+        if all(partition.error is None for partition in outcome or []):
+            self.successful_commits += 1
+        if self.successful_commits >= self.commits_until_stop:
             self.stop_event.set()
-        return offsets
+        return outcome
 
     def close(self):
         self.closed = True
@@ -250,19 +279,125 @@ def test_corrupt_db_recovery_replays_before_committed_group_offset(
     assert [row["event_id"] for row in rows] == ["historical"]
 
 
-def test_recovery_only_rewinds_each_partition_once():
+def test_recovery_rewinds_again_on_rebalance_until_first_commit(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    db_path.write_bytes(b"not a sqlite database")
     stop_event = threading.Event()
-    consumer = _FakeConsumer([], stop_event, committed_offset=42)
+    historical = _FakeMessage(_event("historical", 1), 0)
+    consumer = _FakeConsumer(
+        [],
+        stop_event,
+        committed_offset=42,
+        replay_messages=[historical],
+        pre_commit_rebalance_offset=7,
+    )
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
 
-    materializer._subscribe_for_projection(consumer, replay_from_beginning=True)
-    first_assignment = consumer.assigned[0].offset
+    materializer.consume_loop(materializer.ConsumerState(), stop_event)
+
+    assert consumer.assignment_history[0][0].offset == OFFSET_BEGINNING
+    assert consumer.assignment_history[1][0].offset == OFFSET_BEGINNING
     consumer.on_assign(
         consumer,
-        [TopicPartition(materializer.TOPIC_PREDICTIONS, 0, 7)],
+        [TopicPartition(materializer.TOPIC_PREDICTIONS, 0, 8)],
     )
+    assert consumer.assigned[0].offset == 8
 
-    assert first_assignment == OFFSET_BEGINNING
-    assert consumer.assigned[0].offset == 7
+
+def test_commit_exception_retries_same_persisted_batch(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    consumer = _FakeConsumer(
+        [_FakeMessage(_event("e1", 1), 0)],
+        stop_event,
+        commit_outcomes=[RuntimeError("commit unavailable")],
+    )
+    real_insert_events = materializer.insert_events
+    insert_calls = 0
+
+    def _count_inserts(conn, events):
+        nonlocal insert_calls
+        insert_calls += 1
+        return real_insert_events(conn, events)
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    monkeypatch.setattr(materializer, "insert_events", _count_inserts)
+
+    state = materializer.ConsumerState()
+    materializer.consume_loop(state, stop_event)
+
+    assert len(consumer.commits) == 2
+    assert insert_calls == 1
+    assert state.consume_errors == 1
+    assert [row["event_id"] for row in materializer.recent(db_path, 10)] == ["e1"]
+
+
+def test_partition_commit_error_retries_same_persisted_batch(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    commit_error = _FakeKafkaError(materializer.KafkaError._TIMED_OUT)
+    consumer = _FakeConsumer(
+        [_FakeMessage(_event("e1", 1), 0)],
+        stop_event,
+        commit_outcomes=[
+            [
+                _FakeCommittedPartition(
+                    materializer.TOPIC_PREDICTIONS,
+                    0,
+                    1,
+                    error=commit_error,
+                )
+            ]
+        ],
+    )
+    real_insert_events = materializer.insert_events
+    insert_calls = 0
+
+    def _count_inserts(conn, events):
+        nonlocal insert_calls
+        insert_calls += 1
+        return real_insert_events(conn, events)
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 1)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    monkeypatch.setattr(materializer, "insert_events", _count_inserts)
+
+    state = materializer.ConsumerState()
+    materializer.consume_loop(state, stop_event)
+
+    assert len(consumer.commits) == 2
+    assert insert_calls == 1
+    assert state.consume_errors == 1
+    assert [row["event_id"] for row in materializer.recent(db_path, 10)] == ["e1"]
+
+
+def test_offsets_after_returns_maximum_next_offset_per_partition():
+    messages = [
+        _FakeMessage(_event("p1-low", 2), 2, partition=1),
+        _FakeMessage(_event("p0-high", 9), 9, partition=0),
+        _FakeMessage(_event("p1-high", 5), 5, partition=1),
+        _FakeMessage(_event("p0-low", 4), 4, partition=0),
+    ]
+
+    offsets = materializer._offsets_after(messages)
+
+    assert [
+        (partition.topic, partition.partition, partition.offset)
+        for partition in offsets
+    ] == [
+        (materializer.TOPIC_PREDICTIONS, 0, 10),
+        (materializer.TOPIC_PREDICTIONS, 1, 6),
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -68,6 +68,7 @@ STARTUP_TIMEOUT = 30.0
 STARTUP_READY_TIMEOUT = STARTUP_TIMEOUT + 5.0
 KAFKA_SOCKET_TIMEOUT_MS = 3000
 THREAD_JOIN_TIMEOUT = 10.0
+COMMIT_RETRY_BACKOFF_SEC = 0.1
 
 # Pinned event_id / column ordering shared by parsing, inserts, and reads.
 EVENT_FIELDS = [
@@ -379,21 +380,22 @@ def _wait_for_kafka(consumer: Consumer, bootstrap: str, timeout: float) -> None:
     ) from last_exc
 
 
-def _subscribe_for_projection(consumer: Consumer, replay_from_beginning: bool) -> None:
-    """Subscribe, overriding stored group offsets when the projection was rebuilt."""
+def _subscribe_for_projection(
+    consumer: Consumer, replay_from_beginning: bool
+) -> set[tuple[str, int]]:
+    """Subscribe and return recovery partitions with a successful commit."""
     if not replay_from_beginning:
         consumer.subscribe([TOPIC_PREDICTIONS])
-        return
+        return set()
 
-    rewound_partitions: set[tuple[str, int]] = set()
+    committed_recovery_partitions: set[tuple[str, int]] = set()
 
     def _on_assign(assigned_consumer: Consumer, partitions: list[TopicPartition]):
         rewound = 0
         for partition in partitions:
             key = (partition.topic, partition.partition)
-            if key not in rewound_partitions:
+            if key not in committed_recovery_partitions:
                 partition.offset = OFFSET_BEGINNING
-                rewound_partitions.add(key)
                 rewound += 1
         if rewound:
             log.warning(
@@ -404,6 +406,7 @@ def _subscribe_for_projection(consumer: Consumer, replay_from_beginning: bool) -
         assigned_consumer.assign(partitions)
 
     consumer.subscribe([TOPIC_PREDICTIONS], on_assign=_on_assign)
+    return committed_recovery_partitions
 
 
 def _offsets_after(messages) -> list[TopicPartition]:
@@ -443,7 +446,9 @@ def consume_loop(
                 "socket.timeout.ms": KAFKA_SOCKET_TIMEOUT_MS,
             }
         )
-        _subscribe_for_projection(consumer, replay_from_beginning)
+        committed_recovery_partitions = _subscribe_for_projection(
+            consumer, replay_from_beginning
+        )
         _wait_for_kafka(consumer, KAFKA_BOOTSTRAP, STARTUP_TIMEOUT)
         log.info(
             "Materializer consumer started | %s -> %s | group=%s",
@@ -462,6 +467,7 @@ def consume_loop(
         inserted_since_prune = 0
         pending_batch = None
         pending_events = None
+        pending_persisted = False
 
         while not stop_event.is_set():
             if pending_batch is None:
@@ -494,35 +500,73 @@ def consume_loop(
                     events.append(event)
                 pending_batch = batch
                 pending_events = events
+                pending_persisted = False
 
-            try:
-                inserted = insert_events(conn, pending_events)
-                inserted_since_prune += inserted
-                if inserted:
-                    newest = _recent_rows(conn, 1)[0]
+            if not pending_persisted:
+                try:
+                    inserted = insert_events(conn, pending_events)
+                    inserted_since_prune += inserted
+                    if inserted:
+                        newest = _recent_rows(conn, 1)[0]
+                        with state.lock:
+                            state.last_event_ts = (
+                                newest["api_ts"] or newest["feature_ts"]
+                            )
+                            state.last_write_ts = datetime.now(timezone.utc).isoformat()
+                    if maybe_prune(conn, inserted_since_prune):
+                        inserted_since_prune %= PRUNE_EVERY_N_INSERTS
+                    pending_persisted = True
+                except sqlite3.DatabaseError as exc:
                     with state.lock:
-                        state.last_event_ts = newest["api_ts"] or newest["feature_ts"]
-                        state.last_write_ts = datetime.now(timezone.utc).isoformat()
-                if maybe_prune(conn, inserted_since_prune):
-                    inserted_since_prune %= PRUNE_EVERY_N_INSERTS
-            except sqlite3.DatabaseError as exc:
+                        state.write_errors += 1
+                    log.error("Batch write failed, will retry: %s", exc)
+                    stop_event.wait(0.1)
+                    continue
+
+            offsets = _offsets_after(pending_batch)
+            try:
+                committed = consumer.commit(offsets=offsets, asynchronous=False)
+            except Exception as exc:
                 with state.lock:
-                    state.write_errors += 1
-                log.error("Batch write failed, will retry: %s", exc)
-                stop_event.wait(0.1)
+                    state.consume_errors += 1
+                log.error("Kafka offset commit failed, will retry: %s", exc)
+                stop_event.wait(COMMIT_RETRY_BACKOFF_SEC)
                 continue
 
-            committed = consumer.commit(
-                offsets=_offsets_after(pending_batch), asynchronous=False
+            commit_errors = [
+                partition
+                for partition in committed or []
+                if partition.error is not None
+            ]
+            successful_partitions = [
+                partition for partition in committed or [] if partition.error is None
+            ]
+            committed_recovery_partitions.update(
+                (partition.topic, partition.partition)
+                for partition in successful_partitions
             )
-            for partition in committed or []:
-                if partition.error is not None:
-                    raise RuntimeError(
-                        "Kafka offset commit failed for "
-                        f"{partition.topic}[{partition.partition}]: {partition.error}"
+            if commit_errors:
+                with state.lock:
+                    state.consume_errors += len(commit_errors)
+                for partition in commit_errors:
+                    log.error(
+                        "Kafka offset commit failed for %s[%d], will retry: %s",
+                        partition.topic,
+                        partition.partition,
+                        partition.error,
                     )
+                stop_event.wait(COMMIT_RETRY_BACKOFF_SEC)
+                continue
+            if not committed:
+                with state.lock:
+                    state.consume_errors += 1
+                log.error("Kafka offset commit returned no results; will retry")
+                stop_event.wait(COMMIT_RETRY_BACKOFF_SEC)
+                continue
+
             pending_batch = None
             pending_events = None
+            pending_persisted = False
     except Exception as exc:
         with state.lock:
             if not state.ready:
