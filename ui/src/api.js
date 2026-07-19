@@ -50,3 +50,7 @@ export function fetchSettings(signal) {
 export function fetchSystemStatus(signal) {
   return getJson("/api/system/status", signal);
 }
+
+export function fetchPerformance(windowMinutes, signal) {
+  return getJson(`/api/predictions/performance?window_minutes=${windowMinutes}`, signal);
+}

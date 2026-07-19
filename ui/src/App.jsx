@@ -2,11 +2,13 @@ import { useState } from "react";
 import PredictionsPage from "./pages/PredictionsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import SystemPage from "./pages/SystemPage.jsx";
+import PerformancePage from "./pages/PerformancePage.jsx";
 
 const TABS = [
   { id: "predictions", label: "Predictions" },
   { id: "settings", label: "Settings" },
   { id: "system", label: "System" },
+  { id: "performance", label: "Performance" },
 ];
 
 export default function App() {
@@ -49,6 +51,7 @@ export default function App() {
         {activeTab === "predictions" && <PredictionsPage />}
         {activeTab === "settings" && <SettingsPage />}
         {activeTab === "system" && <SystemPage />}
+        {activeTab === "performance" && <PerformancePage />}
       </main>
     </div>
   );
