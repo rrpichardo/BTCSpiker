@@ -14,6 +14,8 @@ FEATURE_MESSAGE = {
     "trade_intensity_60s": 3.0,
     "n_ticks_60s": 180,
     "spread_mean_60s": 4.0,
+    "feature_id": "BTC-USD:0:41",
+    "stream_epoch": 0,
 }
 
 VALID_RESPONSE = {
@@ -21,6 +23,8 @@ VALID_RESPONSE = {
     "model_variant": "ml",
     "version": "v1.0",
     "ts": "2026-07-16T19:00:01+00:00",
+    "tau": 0.7015,
+    "run_id": "abc123",
 }
 
 EXPECTED_EVENT = {
@@ -36,6 +40,10 @@ EXPECTED_EVENT = {
     "spread_bps": 2.5,
     "log_return": 0.001,
     "trade_intensity_60s": 3.0,
+    "feature_id": "BTC-USD:0:41",
+    "stream_epoch": 0,
+    "tau": 0.7015,
+    "run_id": "abc123",
 }
 
 
@@ -87,9 +95,33 @@ def test_prediction_event_uses_original_feature_timestamp_and_exact_contract():
         row,
         VALID_RESPONSE,
         feature_ts=FEATURE_MESSAGE["timestamp"],
+        feature_id=FEATURE_MESSAGE["feature_id"],
+        stream_epoch=FEATURE_MESSAGE["stream_epoch"],
     )
 
     assert event == EXPECTED_EVENT
+
+
+def test_prediction_event_tolerates_old_format_messages_without_identity():
+    # Backlog messages published before the featurizer split lack
+    # feature_id/stream_epoch, and older API responses lack tau/run_id —
+    # the event must carry nulls, never crash.
+    old_response = {
+        k: v for k, v in VALID_RESPONSE.items() if k not in ("tau", "run_id")
+    }
+    event = bridge._build_prediction_event(
+        FakeMessage(),
+        bridge._build_row(FEATURE_MESSAGE, None),
+        old_response,
+        feature_ts=FEATURE_MESSAGE["timestamp"],
+        feature_id=None,
+        stream_epoch=None,
+    )
+
+    assert event["feature_id"] is None
+    assert event["stream_epoch"] is None
+    assert event["tau"] is None
+    assert event["run_id"] is None
 
 
 def test_publish_prediction_uses_event_id_key_and_exact_payload():
