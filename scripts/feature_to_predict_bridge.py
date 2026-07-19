@@ -166,21 +166,31 @@ def _build_prediction_event(
     response_payload: dict,
     *,
     feature_ts: str | None,
+    feature_id: str | None,
+    stream_epoch: int | None,
 ) -> dict:
     """Assemble the PredictionEvent for the consumed features message.
 
     event_id is derived from the consumed message's own topic/partition/offset
     so retries of the same message produce the same id (downstream dedup key).
+
+    feature_id/stream_epoch come from the raw consumed feature message (old-
+    format backlog messages lack them, so they fall back to null rather than
+    crashing). tau/run_id come from the /predict response payload.
     """
     return {
         "event_id": f"{msg.topic()}:{msg.partition()}:{msg.offset()}",
         "source_partition": msg.partition(),
         "source_offset": msg.offset(),
         "feature_ts": feature_ts,
+        "feature_id": feature_id,
+        "stream_epoch": stream_epoch,
         "api_ts": response_payload.get("ts"),
         "score": response_payload["scores"][0],
         "model_variant": response_payload.get("model_variant"),
         "model_version": response_payload.get("version"),
+        "tau": response_payload.get("tau"),
+        "run_id": response_payload.get("run_id"),
         "vol_60s": row.get("vol_60s"),
         "spread_bps": row.get("spread_bps"),
         "log_return": row.get("log_return"),
@@ -292,6 +302,8 @@ def main() -> None:
                 row,
                 response_payload,
                 feature_ts=feature_message.get("timestamp"),
+                feature_id=feature_message.get("feature_id"),
+                stream_epoch=feature_message.get("stream_epoch"),
             )
             while not stop and not _publish_prediction(producer, event):
                 log.warning(

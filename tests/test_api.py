@@ -142,6 +142,12 @@ def test_predict_single(base_url):
     assert len(body["scores"]) == 1
     assert 0.0 <= body["scores"][0] <= 1.0
     assert body["model_variant"] == "ml"
+    # Model provenance: pickle fallback in this fixture ships a tau but no
+    # MLflow run_id.
+    assert "tau" in body
+    assert isinstance(body["tau"], float)
+    assert "run_id" in body
+    assert body["run_id"] is None
 
 
 def test_predict_batch(base_url):
