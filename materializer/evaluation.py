@@ -337,6 +337,7 @@ def _build_mode(
     drift_pr_auc_ratio: float,
     baseline_vol_threshold: float,
     threshold_info: str,
+    percentile: float | None = None,
 ) -> dict:
     n_graded = len(graded_rows)
     n_positives = sum(1 for label in labels if label)
@@ -372,6 +373,7 @@ def _build_mode(
         "ml_available": len(ml_series) > 0,
         "series": series_list,
         "note": note,
+        "percentile": percentile,
     }
 
 
@@ -531,6 +533,7 @@ def compute_performance(
                 "triggered": False,
                 "detail": "suppressed — activity view is self-normalizing",
             },
+            "percentile": adaptive_percentile,
         }
     else:
         adaptive_labels = [
@@ -550,6 +553,7 @@ def compute_performance(
             drift_pr_auc_ratio=drift_pr_auc_ratio,
             baseline_vol_threshold=baseline_vol_threshold,
             threshold_info=adaptive_threshold_info,
+            percentile=adaptive_percentile,
         )
 
     max_epoch, chart_rows = _chart_rows(

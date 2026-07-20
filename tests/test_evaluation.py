@@ -223,6 +223,38 @@ def test_online_late_split_and_median_lead_seconds():
     assert window["median_lead_seconds"] == pytest.approx(65.0)
 
 
+def test_mode_percentile_field_present_for_ui_badge():
+    # ui/src/pages/PerformancePage.jsx reads modes.adaptive.percentile to
+    # render the "top N% by score" badge text; official mode has no
+    # percentile concept and must report None so the UI hides the badge.
+    api_ts = BASE_TS
+    rows = [
+        _row(i, api_ts=api_ts, written_at=api_ts + timedelta(seconds=60))
+        for i in range(60)
+    ]
+
+    result = evaluation.compute_performance(
+        rows, min_positives=1, adaptive_percentile=85
+    )
+
+    assert result["modes"]["official"]["percentile"] is None
+    assert result["modes"]["adaptive"]["percentile"] == 85
+
+
+def test_mode_percentile_present_even_with_insufficient_adaptive_samples():
+    api_ts = BASE_TS
+    rows = [
+        _row(i, api_ts=api_ts, written_at=api_ts + timedelta(seconds=60))
+        for i in range(10)  # below the 50-sample adaptive_threshold floor
+    ]
+
+    result = evaluation.compute_performance(
+        rows, min_positives=1, adaptive_percentile=85
+    )
+
+    assert result["modes"]["adaptive"]["percentile"] == 85
+
+
 # ---------------------------------------------------------------------------
 # Per-group tau + fallback marker
 # ---------------------------------------------------------------------------
