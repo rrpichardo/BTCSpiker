@@ -77,6 +77,7 @@ services:
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.raw         --partitions 1 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.features    --partitions 1 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.predictions --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.outcomes    --partitions 1 --replication-factor 1
       echo 'Topics created.'
       "
     restart: "no"
@@ -280,6 +281,7 @@ services:
         condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_OUTCOMES: ticks.outcomes
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro
@@ -345,8 +347,16 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
       TOPIC_PREDICTIONS: ticks.predictions
+      TOPIC_OUTCOMES: ticks.outcomes
       KAFKA_GROUP_ID: materializer
+      KAFKA_OUTCOMES_GROUP_ID: materializer-outcomes
       PREDICTIONS_DB_PATH: /data/predictions.db
+      # Evaluation-layer knobs (materializer/evaluation.py) — safe defaults
+      # baked in here so they're discoverable without reading the source.
+      MIN_POSITIVES: ${MIN_POSITIVES:-10}
+      MIN_NOTE_SAMPLE_N: ${MIN_NOTE_SAMPLE_N:-1000}
+      DRIFT_PR_AUC_RATIO: ${DRIFT_PR_AUC_RATIO:-0.7}
+      BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
     volumes:
       - predictions-data:/data
     healthcheck:
