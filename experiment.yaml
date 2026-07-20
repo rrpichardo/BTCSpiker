@@ -1,0 +1,25 @@
+storage:
+  existing_data: "data/processed/features.parquet"
+  artifact_root: ".artifacts/btcspiker"
+  local_cache: ".cache/btcspiker"
+  local_cache_max_gib: 4
+target:
+  name: "trade_price_future_vol_spike_60s_v1"
+  horizon_seconds: 60
+  volatility_threshold: 0.000048
+  price_field: "price"
+validation:
+  folds: 5
+  final_holdout_fraction: 0.20
+  max_feature_lookback_seconds: 300
+  bootstrap_block_minutes: 30
+  bootstrap_resamples: 2000
+  random_seed: 42
+search:
+  max_hours: 24
+  max_parallel_jobs: 4
+  stage_trials: {linear: 30, trees: 80, ablation: 60, ensemble: 30, neural: 10}
+mlflow:
+  tracking_uri: "http://localhost:5001"
+  experiment_name: "btc-volatility-tournament"
+  registered_model_name: "btc-volatility-candidate"

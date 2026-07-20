@@ -1,0 +1,7 @@
+-r handoff/requirements.txt
+optuna>=3.6,<5
+scipy>=1.11,<2
+psutil>=5.9,<8
+lightgbm>=4.3,<5
+xgboost>=2.0,<4
+catboost>=1.2,<2
