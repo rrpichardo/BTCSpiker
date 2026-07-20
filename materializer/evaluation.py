@@ -199,6 +199,11 @@ def _split_graded(joined_rows: list[dict]) -> tuple[list[dict], list[float], int
         if row.get("written_at") is None:
             n_predictions_unmatched += 1
             continue
+        if not isinstance(row.get("score"), (int, float)):
+            # Malformed/old-format prediction (e.g. missing score) that still
+            # has a matched outcome — exclude rather than crash grading math
+            # downstream (sorting/thresholding assumes a numeric score).
+            continue
         api_dt = _parse_dt(row.get("api_ts"))
         written_dt = _parse_dt(row.get("written_at"))
         if api_dt is None or written_dt is None:

@@ -223,6 +223,21 @@ def test_online_late_split_and_median_lead_seconds():
     assert window["median_lead_seconds"] == pytest.approx(65.0)
 
 
+def test_null_score_row_excluded_from_grading_not_crashed():
+    # A malformed/old-format prediction event (missing score) that still has
+    # a matched outcome must be excluded from grading, not raise TypeError
+    # when the AP/confusion math tries to sort/threshold a None score.
+    api_ts = BASE_TS
+    good = _row(0, api_ts=api_ts, written_at=api_ts + timedelta(seconds=60), score=0.8)
+    null_score = _row(
+        1, api_ts=api_ts, written_at=api_ts + timedelta(seconds=60), score=None
+    )
+
+    result = evaluation.compute_performance([good, null_score], min_positives=1)
+
+    assert result["window"]["n_graded"] == 1
+
+
 def test_mode_percentile_field_present_for_ui_badge():
     # ui/src/pages/PerformancePage.jsx reads modes.adaptive.percentile to
     # render the "top N% by score" badge text; official mode has no
