@@ -756,6 +756,7 @@ def test_health_snapshot_reflects_rows_and_counters(tmp_path):
         consume_errors=2,
         write_errors=1,
         alive=True,
+        outcomes_alive=True,
         broker_ok=True,
     )
 
@@ -931,6 +932,9 @@ def test_lifespan_waits_for_consumer_readiness_and_joins_on_shutdown(monkeypatch
         stopped.set()
 
     monkeypatch.setattr(materializer, "consume_loop", _controlled_loop)
+    # The outcomes consumer thread runs alongside the predictions one; stub
+    # it too so this test doesn't reach out to a real (nonexistent) broker.
+    monkeypatch.setattr(materializer, "consume_outcomes_loop", _controlled_loop)
     materializer._state.ready = False
 
     with TestClient(materializer.app):
@@ -982,6 +986,127 @@ def test_compose_healthcheck_requires_materializer_ok_true():
     materializer_section = compose.split("  materializer:", 1)[1].split("  ui:", 1)[0]
     assert "json.load" in materializer_section
     assert ".get('ok') is True" in materializer_section
+
+
+# ---------------------------------------------------------------------------
+# outcomes table / ticks.outcomes consumer (Perf Task C2)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOutcomeMessage(_FakeMessage):
+    def topic(self):
+        return materializer.TOPIC_OUTCOMES
+
+
+def _outcome_event(feature_id: str, **overrides) -> dict:
+    """Build a full OutcomeEvent dict matching the pinned ticks.outcomes
+    contract, with sensible defaults for every field."""
+    row = {
+        "feature_id": feature_id,
+        "stream_epoch": 1,
+        "product_id": "BTC-USD",
+        "feature_ts": "2026-07-16T19:00:00Z",
+        "future_vol_60s": 2.9e-5,
+        "vol_spike": 0,
+        "label_schema": "p85-60s-4.8e-05-v1",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_outcomes_dedup_insert_twice_yields_one_row(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    event = _outcome_event("BTC-USD:1:1")
+
+    first = materializer.insert_outcomes(conn, [event])
+    second = materializer.insert_outcomes(conn, [event])
+
+    assert first == 1
+    assert second == 0
+    rows = conn.execute("SELECT feature_id FROM outcomes").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "BTC-USD:1:1"
+
+
+def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
+    db_path = tmp_path / "old_schema.db"
+    # Build a DB with the OLD predictions schema (no feature_id/stream_epoch/
+    # tau/run_id) to exercise the ALTER TABLE migration path.
+    raw = sqlite3.connect(str(db_path))
+    raw.execute(
+        """
+        CREATE TABLE predictions (
+            event_id TEXT PRIMARY KEY,
+            source_partition INT,
+            source_offset INT,
+            feature_ts TEXT,
+            api_ts TEXT,
+            model_variant TEXT,
+            model_version TEXT,
+            score REAL,
+            vol_60s REAL,
+            spread_bps REAL,
+            log_return REAL,
+            trade_intensity_60s REAL
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO predictions (event_id, source_partition, source_offset, "
+        "feature_ts, api_ts, model_variant, model_version, score, vol_60s, "
+        "spread_bps, log_return, trade_intensity_60s) VALUES "
+        "('old1', 0, 1, '2026-07-16T19:00:00Z', '2026-07-16T19:00:00Z', "
+        "'ml', 'v1.0', 0.4, 0.00003, 1.0, 0.0001, 5.0)"
+    )
+    raw.commit()
+    raw.close()
+
+    conn = materializer.init_db(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
+    assert {"feature_id", "stream_epoch", "tau", "run_id"} <= columns
+
+    row = conn.execute(
+        "SELECT event_id, feature_id, tau FROM predictions WHERE event_id = 'old1'"
+    ).fetchone()
+    assert row == ("old1", None, None)
+    conn.close()
+
+    # A second init_db call on the now-migrated DB must not error.
+    conn2 = materializer.init_db(db_path)
+    columns2 = {row[1] for row in conn2.execute("PRAGMA table_info(predictions)")}
+    assert {"feature_id", "stream_epoch", "tau", "run_id"} <= columns2
+    conn2.close()
+
+
+def test_outcomes_consumer_skips_malformed_message_and_commits_past_it(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "predictions.db"
+    materializer.init_db(db_path).close()
+    stop_event = threading.Event()
+    consumer = _FakeConsumer(
+        [
+            _FakeOutcomeMessage({"vol_spike": 0}, 0),  # missing feature_id
+            _FakeOutcomeMessage(_outcome_event("BTC-USD:1:1"), 1),
+        ],
+        stop_event,
+    )
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "BATCH_MAX_SIZE", 2)
+    monkeypatch.setattr(materializer, "BATCH_WINDOW_SEC", 0.01)
+    monkeypatch.setattr(materializer, "Consumer", lambda config: consumer)
+    state = materializer.ConsumerState()
+
+    materializer.consume_outcomes_loop(state, stop_event)
+
+    conn = sqlite3.connect(str(db_path))
+    feature_ids = [row[0] for row in conn.execute("SELECT feature_id FROM outcomes")]
+    conn.close()
+
+    assert feature_ids == ["BTC-USD:1:1"]
+    assert state.consume_errors == 1
+    assert consumer.commits[0][0].offset == 2
+    assert consumer.closed is True
 
 
 if __name__ == "__main__":
