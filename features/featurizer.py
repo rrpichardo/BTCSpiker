@@ -112,10 +112,11 @@ class ParquetSink(AtomicParquetSink):
 class ProductState:
     """All mutable state for a single product_id."""
 
-    def __init__(self, window_sec: float, horizon_sec: float, vol_threshold: float):
+    def __init__(self, window_sec: float, horizon_sec: float, vol_threshold: float, boot_id: str):
         self.window_sec    = window_sec
         self.horizon_sec   = horizon_sec
         self.vol_threshold = vol_threshold
+        self.boot_id       = boot_id       # unique per process start (see feature_id below)
         self.price_buf:  deque = deque()   # {"price": float, "ts": float}
         self.spread_buf: deque = deque()  # {"spread_abs": float, "ts": float}
         self.ts_buf:     deque = deque()  # float timestamps
@@ -203,7 +204,13 @@ class ProductState:
             "price_range_60s":     rolling["price_range"],
         }
 
-        feature_id = f"{tick['product_id']}:{self.epoch}:{self.seq}"
+        # boot_id makes feature_id collision-free across process restarts: epoch/seq
+        # alone would restart at 0 on every boot, while the deployed consumer group
+        # is stable and resumes mid-stream — without boot_id, a restart's early
+        # feature_ids would collide with the prior run's, silently dropping (INSERT
+        # OR IGNORE) that run's outcome or, worse, joining a prediction to a
+        # different run's unrelated outcome.
+        feature_id = f"{tick['product_id']}:{self.boot_id}:{self.epoch}:{self.seq}"
         feature_row = {**features, "feature_id": feature_id, "stream_epoch": self.epoch}
 
         self.pending.append(
@@ -333,6 +340,12 @@ def main():
     vol_threshold  = float(cfg["features"]["vol_threshold"])
     parquet_path   = Path(args.output_parquet or cfg["data"]["features_file"])
 
+    # Unconditional, independent of group_id: the deployed group_id is stable
+    # (ticks-featurizer) so a restart resumes mid-stream while ProductState's
+    # epoch/seq would otherwise restart at 0 — boot_id keeps every feature_id
+    # collision-free across restarts (see ProductState.ingest).
+    boot_id = uuid.uuid4().hex[:8]
+
     consumer = Consumer({
         "bootstrap.servers": bootstrap,
         "group.id":          group_id,
@@ -356,9 +369,9 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     log.info(
-        "Featurizer started | %s → %s (immediate) + %s (outcomes, %.0fs delay) | "
+        "Featurizer started | boot_id=%s | %s → %s (immediate) + %s (outcomes, %.0fs delay) | "
         "parquet=%s | group=%s | offset=%s | window=%.0fs horizon=%.0fs",
-        topic_in, topic_out, topic_outcomes, horizon_sec,
+        boot_id, topic_in, topic_out, topic_outcomes, horizon_sec,
         parquet_path, group_id,
         "latest" if args.latest else "earliest", window_sec, horizon_sec,
     )
@@ -381,7 +394,7 @@ def main():
 
         pid = tick.get("product_id", "unknown")
         if pid not in states:
-            states[pid] = ProductState(window_sec, horizon_sec, vol_threshold)
+            states[pid] = ProductState(window_sec, horizon_sec, vol_threshold, boot_id)
 
         try:
             feature_row, drained = states[pid].ingest(tick)

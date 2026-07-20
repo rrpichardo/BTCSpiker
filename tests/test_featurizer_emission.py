@@ -51,8 +51,8 @@ def _tick(product_id: str, offset_sec: float, price: float) -> dict:
     }
 
 
-def _new_state() -> ProductState:
-    return ProductState(WINDOW_SEC, HORIZON_SEC, VOL_THRESHOLD)
+def _new_state(boot_id: str = "boot1") -> ProductState:
+    return ProductState(WINDOW_SEC, HORIZON_SEC, VOL_THRESHOLD, boot_id)
 
 
 # ---------------------------------------------------------------------------
@@ -66,13 +66,13 @@ def test_feature_row_emitted_same_call_no_delay():
 
     assert feature_row is not None
     assert drained == []  # nothing old enough to drain yet
-    assert feature_row["feature_id"] == "BTC-USD:0:0"
+    assert feature_row["feature_id"] == "BTC-USD:boot1:0:0"
     assert feature_row["stream_epoch"] == 0
     assert ORIGINAL_FEATURE_KEYS <= feature_row.keys()
 
     # seq increments per emitted row
     feature_row_2, _ = state.ingest(_tick("BTC-USD", 0.5, 100.5))
-    assert feature_row_2["feature_id"] == "BTC-USD:0:1"
+    assert feature_row_2["feature_id"] == "BTC-USD:boot1:0:1"
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ def test_timestamp_regression_bumps_epoch_and_drops_stale_pending():
     assert drained == []
     assert state.epoch == 1
     assert feature_row["stream_epoch"] == 1
-    assert feature_row["feature_id"] == "BTC-USD:1:0"
+    assert feature_row["feature_id"] == "BTC-USD:boot1:1:0"
     assert state.seq == 1  # incremented past the row we just emitted
     assert len(state.price_buf) == 1
     assert len(state.spread_buf) == 1
@@ -154,8 +154,8 @@ def test_timestamp_regression_bumps_epoch_and_drops_stale_pending():
             seen_feature_ids.add(outcome["feature_id"])
         t += 0.5
 
-    assert "BTC-USD:0:0" not in seen_feature_ids
-    assert "BTC-USD:0:1" not in seen_feature_ids
+    assert "BTC-USD:boot1:0:0" not in seen_feature_ids
+    assert "BTC-USD:boot1:0:1" not in seen_feature_ids
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +214,27 @@ def test_vol_spike_label_is_strictly_greater_than_threshold():
     # given VOL_THRESHOLD is tiny relative to this price ramp) yields spike=1.
     assert labelled_row["vol_spike"] == outcome_event["vol_spike"]
     assert labelled_row["vol_spike"] == int(future_vol > VOL_THRESHOLD)
+
+
+# ---------------------------------------------------------------------------
+# 6. feature_id collision-free across process restarts
+# ---------------------------------------------------------------------------
+
+
+def test_restarted_process_gets_distinct_feature_ids_from_prior_run():
+    # Simulates the deployed shape: a stable consumer group resumes
+    # mid-stream after a restart, so ProductState is recreated fresh
+    # (epoch=0, seq=0) while ticks.raw keeps flowing from where it left
+    # off. Without a boot_id, "run 2"'s early feature_ids would collide
+    # with "run 1"'s, silently dropping outcomes (INSERT OR IGNORE) or
+    # joining a prediction to an unrelated run's outcome.
+    run1 = _new_state(boot_id="run1")
+    run1_row, _ = run1.ingest(_tick("BTC-USD", 0.0, 100.0))
+
+    run2 = _new_state(boot_id="run2")  # process restarted, group resumes mid-stream
+    run2_row, _ = run2.ingest(_tick("BTC-USD", 100.0, 105.0))
+
+    assert run1_row["feature_id"] != run2_row["feature_id"]
+    # Same epoch/seq numbering per run (0:0) — boot_id is what disambiguates.
+    assert run1_row["feature_id"] == "BTC-USD:run1:0:0"
+    assert run2_row["feature_id"] == "BTC-USD:run2:0:0"
