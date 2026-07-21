@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from btcspiker_ml.config import ExperimentConfig, load_experiment_config
 from btcspiker_ml.datasets import resolve_existing_dataset
+from btcspiker_ml.features import FEATURE_SETS
 from btcspiker_ml.metrics import evaluate_predictions
 from btcspiker_ml.models import build_model, model_families, suggest_params
 from btcspiker_ml.search import VALID_STAGES, run_stage
@@ -141,6 +142,15 @@ def _configured_params(raw: dict[str, Any], family: str) -> dict[str, Any]:
     return dict(raw.get(f"{family}_params", {}))
 
 
+def _runtime_feature_contract(raw: dict[str, Any]) -> tuple[str, str]:
+    """Resolve the runtime feature identity from the registered feature set."""
+    feature_set_id = str(raw.get("feature_set_id", ""))
+    feature_set = FEATURE_SETS.get(feature_set_id)
+    if feature_set is None:
+        raise ValueError(f"unknown runtime feature_set_id: {feature_set_id!r}")
+    return feature_set.feature_set_id, feature_set.schema_version
+
+
 def _bind_evaluator(
     config: ExperimentConfig, raw: dict[str, Any], stage: str,
     spec: dict[str, Any], frame: pd.DataFrame,
@@ -247,12 +257,15 @@ def _evaluate_development_trial(
     fraction_positive, mean_predicted = calibration_curve(oof["target"], oof["prediction"], n_bins=10, strategy="quantile")
     p95_latency_ms = float(np.percentile(per_row_latency_ms, 95))
     family = str(spec["model_family"])
+    feature_set_id, feature_schema_version = _runtime_feature_contract(raw)
 
     return {
         "outcome": "finished",
         "params": {
             "model_family": family, "model_params": dict(spec.get("params", {})),
             "feature_cols": ",".join(columns), "feature_columns": columns,
+            "feature_set_id": feature_set_id,
+            "feature_schema_version": feature_schema_version,
             "tau": tau, "final_holdout": "sealed",
             "max_parallel_jobs": config.search.max_parallel_jobs,
         },
@@ -274,7 +287,12 @@ def _evaluate_development_trial(
                 "rows": len(frame), "start_time": str(timestamps.iloc[0]), "end_time": str(timestamps.iloc[-1]),
                 "target_prevalence": float(target.mean()),
             },
-            "feature_manifest": {"feature_set_id": raw.get("feature_set_id", "unknown"), "columns": columns, "removed_feature": removed},
+            "feature_manifest": {
+                "feature_set_id": feature_set_id,
+                "feature_schema_version": feature_schema_version,
+                "columns": columns,
+                "removed_feature": removed,
+            },
             "fold_boundaries": fold_boundaries,
             "oof_predictions": oof.to_csv(index=False),
             "pr_plot": pd.DataFrame({"precision": precision, "recall": recall}).to_csv(index=False),

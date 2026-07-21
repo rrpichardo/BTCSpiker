@@ -92,6 +92,8 @@ def test_development_winner_is_registration_ready_without_opening_holdout(tmp_pa
     assert winner.data.tags["feature_parity_passed"] == "true"
     assert winner.data.params["feature_cols"] == "log_return,spread_bps"
     assert json.loads(winner.data.params["feature_columns"]) == ["log_return", "spread_bps"]
+    assert winner.data.params["feature_set_id"] == "core_v1"
+    assert winner.data.params["feature_schema_version"] == "1"
     assert 0.0 <= float(winner.data.params["tau"]) <= 1.0
     artifact_paths = {item.path for item in client.list_artifacts(winner_id)}
     assert {"model", "dataset-manifest.json", "feature-manifest.json", "fold-boundaries.json", "oof-predictions.csv", "resource-timing.json"} <= artifact_paths

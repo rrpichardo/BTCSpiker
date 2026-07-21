@@ -50,6 +50,7 @@ BASELINE_VOL_THRESHOLD = float(os.getenv("BASELINE_VOL_THRESHOLD", "0.000048"))
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
 MODEL_NAME = os.getenv("MODEL_NAME", "btc-volatility-lr")
 MODEL_STAGE = os.getenv("MODEL_STAGE", "Production")
+LEGACY_MODEL_SELECTION = ("btc-volatility-lr", "Production")
 
 if MODEL_VARIANT not in {"ml", "baseline"}:
     raise ValueError(f"MODEL_VARIANT must be 'ml' or 'baseline', got {MODEL_VARIANT!r}")
@@ -100,19 +101,32 @@ if MODEL_VARIANT == "ml":
 
         # Retrieve the complete feature contract stored with the registered run.
         _run = _client.get_run(mlflow_run_id)
-        FEATURE_COLS = _run.data.params["feature_cols"].split(",")
-        FEATURE_SET_ID = _run.data.params.get(
-            "feature_set_id", FEATURE_SET_ID_DEFAULT
-        )
-        FEATURE_SCHEMA_VERSION = _run.data.params.get(
+        _params = _run.data.params
+        _required_contract = ("feature_cols", "tau")
+        if (MODEL_NAME, MODEL_STAGE) != LEGACY_MODEL_SELECTION:
+            _required_contract += ("feature_set_id", "feature_schema_version")
+        _missing_contract = [key for key in _required_contract if not _params.get(key)]
+        if _missing_contract:
+            raise ValueError(
+                "registered model lacks runtime contract parameters: "
+                + ", ".join(_missing_contract)
+            )
+        FEATURE_COLS = _params["feature_cols"].split(",")
+        FEATURE_SET_ID = _params.get("feature_set_id", FEATURE_SET_ID_DEFAULT)
+        FEATURE_SCHEMA_VERSION = _params.get(
             "feature_schema_version", FEATURE_SCHEMA_VERSION_DEFAULT
         )
-        TAU = float(_run.data.params["tau"])
+        TAU = float(_params["tau"])
 
         model_source = "mlflow"
         logger.info("Loaded model from MLflow run %s", mlflow_run_id)
 
     except Exception as _mlflow_exc:
+        if (MODEL_NAME, MODEL_STAGE) != LEGACY_MODEL_SELECTION:
+            raise RuntimeError(
+                "registered candidate could not load its complete runtime contract; "
+                "refusing the legacy pickle fallback"
+            ) from _mlflow_exc
         logger.warning("MLflow unavailable (%s), falling back to pickle", _mlflow_exc)
         # Fall back to local pickle bundle
         _model_path = Path(MODEL_PATH)
@@ -374,6 +388,24 @@ def predict(req: PredictRequest):
     start = time.perf_counter()
 
     for row in req.rows:
+        if (
+            MODEL_VARIANT == "ml"
+            and (MODEL_NAME, MODEL_STAGE) != LEGACY_MODEL_SELECTION
+            and row.feature_set_id is None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="feature_set_id is required for a registered candidate",
+            )
+        if (
+            MODEL_VARIANT == "ml"
+            and (MODEL_NAME, MODEL_STAGE) != LEGACY_MODEL_SELECTION
+            and row.feature_schema_version is None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="feature_schema_version is required for a registered candidate",
+            )
         if row.feature_set_id is not None and row.feature_set_id != FEATURE_SET_ID:
             raise HTTPException(
                 status_code=422,
