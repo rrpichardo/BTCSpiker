@@ -106,7 +106,7 @@ def build_stage_trials(config: ExperimentConfig, raw: dict[str, Any], stage: str
         optional_module = _OPTIONAL_MODULES.get(family)
         if optional_module and importlib.util.find_spec(optional_module) is None:
             spec.update(outcome="skipped", skip_reason=f"optional model backend {optional_module} is not installed")
-        elif family == "neural":
+        elif family == "neural" and importlib.util.find_spec("torch") is None:
             spec.update(outcome="skipped", skip_reason="neural trials require the isolated neural environment")
         else:
             if frame is None:
@@ -164,7 +164,10 @@ def _bind_evaluator(
 def _candidate_model(spec: dict[str, Any], config: ExperimentConfig):
     family = str(spec["model_family"])
     params = dict(spec.get("params", {}))
-    n_jobs = max(1, int(config.search.max_parallel_jobs))
+    # Trial-level scheduling owns the configured parallelism.  Keep each
+    # estimator single-threaded so four concurrent trials do not create a
+    # second, unbounded pool of worker processes.
+    n_jobs = 1
     if family == "development_prevalence":
         estimator = DummyClassifier(strategy="prior")
     elif family == "logistic_hist_gradient_soft_voting":
@@ -335,6 +338,7 @@ def main() -> int:
         "target_version": raw.get("target_version", config.target.name),
         "validation_version": raw.get("validation_version", "purged_walkforward_v1"),
         "deployable": False, "max_hours": config.search.max_hours,
+        "max_parallel_jobs": config.search.max_parallel_jobs,
         "trials": build_stage_trials(config, raw, args.stage), "labelled_rows": int(frame.shape[0]),
         "development_fold_positive_events": raw.get("development_fold_positive_events", []),
         "resume": args.resume,

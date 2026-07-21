@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 import mlflow
 import numpy as np
@@ -8,7 +9,7 @@ import yaml
 
 from btcspiker_ml.config import load_experiment_config
 from btcspiker_ml.search import SearchState, run_stage
-from scripts.run_experiments import _roundtrip_feature_parity, build_stage_trials
+from scripts.run_experiments import _candidate_model, _roundtrip_feature_parity, build_stage_trials
 
 
 def _write_config(tmp_path: Path, *, linear_trials: int = 4) -> tuple[Path, dict]:
@@ -61,6 +62,52 @@ def test_stage_trial_plans_consume_configured_budgets_families_and_search_params
     assert len(ensemble) == 2
     assert all(0.0 < trial["params"]["tree_weight"] < 1.0 for trial in ensemble)
     assert all(trial["params"] for trial in linear + trees)
+
+
+def test_neural_trials_run_when_the_isolated_neural_environment_is_available(tmp_path: Path, monkeypatch):
+    path, raw = _write_config(tmp_path)
+    config = load_experiment_config(path)
+    import scripts.run_experiments as runner
+
+    original_find_spec = runner.importlib.util.find_spec
+    monkeypatch.setattr(
+        runner.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "torch" else original_find_spec(name),
+    )
+
+    trial = build_stage_trials(config, raw, "neural")[0]
+
+    assert "outcome" not in trial
+    assert callable(trial["evaluate"])
+
+
+def test_cli_passes_configured_parallel_trial_limit_to_search(tmp_path: Path, monkeypatch):
+    path, _raw = _write_config(tmp_path, linear_trials=1)
+    import scripts.run_experiments as runner
+
+    received: dict[str, object] = {}
+    monkeypatch.setattr("sys.argv", ["run_experiments.py", "--config", str(path), "--dataset-id", "d1", "--stage", "linear"])
+    monkeypatch.setattr(runner.subprocess, "check_output", lambda *_args, **_kwargs: "abc\n")
+    monkeypatch.setattr(
+        runner,
+        "run_stage",
+        lambda values, *_args: received.update(values) or SimpleNamespace(status="completed", parent_run_id="parent"),
+    )
+
+    assert runner.main() == 0
+    assert received["max_parallel_jobs"] == 2
+
+
+def test_parallel_trials_do_not_start_nested_estimator_pools(tmp_path: Path):
+    path, raw = _write_config(tmp_path)
+    config = load_experiment_config(path)
+
+    model = _candidate_model(
+        {"model_family": "random_forest", "params": {"n_estimators": 10}}, config,
+    )
+
+    assert model.named_steps["model"].n_jobs == 1
 
 
 def test_feature_parity_compares_refitted_model_with_serialized_runtime_model():

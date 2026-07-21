@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import threading
+import time
 
 import mlflow
 import pytest
@@ -99,3 +101,51 @@ def test_partial_resume_reuses_parent_and_keeps_better_persisted_winner(tmp_path
     runs = client.search_runs([experiment.experiment_id])
     parents = [run for run in runs if run.data.tags.get("candidate_stage") == "linear" and not run.data.tags.get("mlflow.parentRunId")]
     assert len(parents) == 1
+
+
+def test_stage_evaluates_independent_trials_up_to_configured_parallel_limit(tmp_path: Path):
+    config = _config(tmp_path)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def evaluate():
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return {"metrics": {"aggregate_pr_auc": 0.2}}
+
+    config.update(
+        max_parallel_jobs=2,
+        trials=[
+            {"id": str(number), "model_family": "logistic", "evaluate": evaluate}
+            for number in range(4)
+        ],
+    )
+
+    run_stage(config, "d1", "core_v1", "linear")
+
+    assert peak == 2
+
+
+def test_neural_stage_requires_measured_boosted_tree_plateau(tmp_path: Path):
+    config = _config(tmp_path)
+    state = SearchState.new("search-1", "d1", wall_clock_seconds=3600)
+    state.completed_stages = ["trees", "ablation"]
+    state.stage_score_history = {"trees": [0.10, 0.11, 0.12, 0.13]}
+    state.save(tmp_path / "state" / "search-1.json")
+    config.update(
+        labelled_rows=100_000,
+        development_fold_positive_events=[100, 100, 100, 100, 100],
+        trials=[{"id": "neural", "outcome": "skipped", "skip_reason": "environment"}],
+        resume=True,
+    )
+
+    result = run_stage(config, "d1", "core_v1", "neural")
+
+    assert result.status == "skipped"
+    assert "boosted-tree plateau" in result.skipped_reason

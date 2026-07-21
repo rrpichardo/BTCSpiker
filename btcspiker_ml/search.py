@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 from pathlib import Path
 import time
@@ -33,6 +34,7 @@ class SearchState:
     experiment_contract: dict[str, str] = field(default_factory=dict)
     best_scores: dict[str, float] = field(default_factory=dict)
     stage_parent_run_ids: dict[str, str] = field(default_factory=dict)
+    stage_score_history: dict[str, list[float]] = field(default_factory=dict)
 
     @classmethod
     def new(cls, search_id: str, dataset_id: str, *, wall_clock_seconds: float) -> "SearchState":
@@ -139,7 +141,11 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
     completed_now: list[str] = []
     failures = 0
     try:
-        for number, trial in pending:
+        evaluated_trials = _evaluate_pending_trials(
+            pending, max_parallel_jobs=int(values.get("max_parallel_jobs", 1)),
+            remaining_wall_clock_seconds=state.remaining_wall_clock_seconds, started=started,
+        )
+        for number, trial, evaluated in evaluated_trials:
             trial_id = str(trial.get("id", number))
             child_lineage = _lineage(
                 values, dataset_id, feature_set_id, stage,
@@ -151,8 +157,8 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
             try:
                 if state.remaining_wall_clock_seconds <= time.monotonic() - started:
                     trial = {**trial, "outcome": "skipped", "skip_reason": "search wall-clock budget exhausted"}
-                evaluator = trial.get("evaluate")
-                evaluated = dict(evaluator()) if callable(evaluator) and trial.get("outcome", "finished") == "finished" else {}
+                if isinstance(evaluated, BaseException):
+                    raise evaluated
                 record = {**trial, **evaluated}
                 outcome = str(record.get("outcome", "finished"))
                 if outcome == "failed":
@@ -182,6 +188,8 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
                     if score is not None and float(score) > state.best_scores.get(stage, float("-inf")):
                         state.best_run_ids[stage] = child_id
                         state.best_scores[stage] = float(score)
+                    if score is not None:
+                        state.stage_score_history.setdefault(stage, []).append(float(score))
                 else:
                     raise ValueError(f"unsupported trial outcome {outcome!r}")
             except Exception as exc:
@@ -249,4 +257,56 @@ def _neural_ineligibility_reason(values: Mapping[str, Any], state: SearchState) 
     missing = [stage for stage in ("trees", "ablation") if stage not in state.completed_stages]
     if missing:
         return f"neural stage requires completed stages: {', '.join(missing)}"
+    scores = state.stage_score_history.get("trees", [])
+    minimum_trials = int(values.get("boosted_tree_plateau_min_trials", 10))
+    if len(scores) < minimum_trials:
+        return f"neural stage requires measured boosted-tree plateau from at least {minimum_trials} tree trials"
+    midpoint = len(scores) // 2
+    earlier_best = max(scores[:midpoint])
+    later_best = max(scores[midpoint:])
+    max_improvement = float(values.get("boosted_tree_plateau_max_improvement", 0.001))
+    if later_best - earlier_best > max_improvement:
+        return (
+            "neural stage requires boosted-tree plateau "
+            f"(improvement {later_best - earlier_best:.6f} exceeds {max_improvement:.6f})"
+        )
     return None
+
+
+def _evaluate_pending_trials(
+    pending: list[tuple[int, Mapping[str, Any]]], *, max_parallel_jobs: int,
+    remaining_wall_clock_seconds: float, started: float,
+) -> list[tuple[int, Mapping[str, Any], dict[str, Any] | BaseException]]:
+    """Evaluate independent development trials concurrently, then log them serially.
+
+    MLflow's fluent run context is process-global, so evaluations run in worker
+    threads while parent/child MLflow logging remains ordered on the caller.
+    """
+    results: list[tuple[int, Mapping[str, Any], dict[str, Any] | BaseException]] = []
+    workers = max(1, max_parallel_jobs)
+    for start_index in range(0, len(pending), workers):
+        batch = pending[start_index:start_index + workers]
+        if time.monotonic() - started >= remaining_wall_clock_seconds:
+            results.extend((number, {**trial, "outcome": "skipped", "skip_reason": "search wall-clock budget exhausted"}, {}) for number, trial in batch)
+            continue
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures: list[Future[dict[str, Any]]] = []
+            runnable: list[bool] = []
+            for _number, trial in batch:
+                evaluator = trial.get("evaluate")
+                should_evaluate = callable(evaluator) and trial.get("outcome", "finished") == "finished"
+                runnable.append(should_evaluate)
+                if should_evaluate:
+                    futures.append(executor.submit(evaluator))
+            future_index = 0
+            for (number, trial), should_evaluate in zip(batch, runnable):
+                if not should_evaluate:
+                    results.append((number, trial, {}))
+                    continue
+                future = futures[future_index]
+                future_index += 1
+                try:
+                    results.append((number, trial, dict(future.result())))
+                except BaseException as exc:
+                    results.append((number, trial, exc))
+    return results

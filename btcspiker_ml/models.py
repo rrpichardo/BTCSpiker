@@ -7,6 +7,7 @@ from typing import Any
 
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression, SGDClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -63,6 +64,9 @@ def build_model(family: str, params: dict[str, Any], seed: int, n_jobs: int):
         return ExtraTreesClassifier(**_with_defaults(params, {"n_estimators": 300, "min_samples_leaf": 5, "random_state": seed, "n_jobs": n_jobs}))
     if family == "hist_gradient_boosting":
         return HistGradientBoostingClassifier(**_with_defaults(params, {"max_iter": 300, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 5, "early_stopping": True, "validation_fraction": 0.5, "random_state": seed}))
+    if family == "neural":
+        width = int(params.pop("hidden_width", 64))
+        return MLPClassifier(**_with_defaults(params, {"hidden_layer_sizes": (width,), "max_iter": 300, "early_stopping": True, "random_state": seed}))
     if family == "lightgbm":
         _optional_library("lightgbm", family)
         from lightgbm import LGBMClassifier
