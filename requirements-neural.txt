@@ -1,0 +1,2 @@
+# Optional neural-model dependency. Do not install in the standard experiment environment.
+torch>=2.3,<3
