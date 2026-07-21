@@ -2,13 +2,9 @@
 Replay — batch feature builder from NDJSON mirror files.
 
 Reads all NDJSON tick files matching a glob pattern, sorts lines by
-timestamp across files, then feeds each tick through the same feature_funcs
-calls used by the live featurizer.  Outputs a single Parquet file with
-future-vol labels (60s lookahead by default).
-
-State management mirrors featurizer.ProductState exactly so that feature
-values are numerically identical to what the live pipeline would produce
-given the same tick stream.
+timestamp across files, then feeds each tick through the shared
+``btcspiker_ml.features.FeatureEngine`` used by the live featurizer. Outputs
+a single Parquet file with future-vol labels (60s lookahead by default).
 
 Usage
 -----
@@ -22,26 +18,20 @@ import glob
 import heapq
 import json
 import logging
-import re
 import sys
-from collections import deque
-from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "features"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+FEATURES_DIR = PROJECT_ROOT / "features"
+if str(FEATURES_DIR) not in sys.path:
+    sys.path.insert(0, str(FEATURES_DIR))
 
 import pyarrow as pa
 import yaml
 
-from feature_funcs import (
-    compute_future_vol,
-    compute_midprice,
-    compute_return,
-    compute_rolling_stats,
-    compute_spread,
-    compute_spread_mean,
-    compute_trade_intensity,
-)
+from btcspiker_ml.features import FeatureEngine, parse_timestamp
 from parquet_sink import AtomicParquetSink
 
 logging.basicConfig(
@@ -50,8 +40,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-BUFFER_MAX_AGE = 600
 FLUSH_ROWS     = 500
+FEATURE_SET_ID = "core_v1"
 
 PARQUET_SCHEMA = pa.schema([
     ("product_id",          pa.string()),
@@ -67,6 +57,8 @@ PARQUET_SCHEMA = pa.schema([
     ("trade_intensity_60s", pa.float64()),
     ("spread_mean_60s",     pa.float64()),
     ("price_range_60s",     pa.float64()),
+    ("feature_set_id",      pa.string()),
+    ("feature_schema_version", pa.string()),
     ("future_vol_60s",      pa.float64()),
     ("vol_spike",           pa.int64()),
 ])
@@ -81,12 +73,6 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def _parse_ts(ts_str: str) -> float:
-    # Truncate nanosecond precision to microseconds; fromisoformat supports up to 6 digits
-    ts_str = re.sub(r"(\.\d{6})\d+", r"\1", ts_str)
-    return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-
-
 # ---------------------------------------------------------------------------
 # Parquet sink
 # ---------------------------------------------------------------------------
@@ -94,99 +80,6 @@ def _parse_ts(ts_str: str) -> float:
 class ParquetSink(AtomicParquetSink):
     def __init__(self, path: Path):
         super().__init__(path=path, schema=PARQUET_SCHEMA, flush_rows=FLUSH_ROWS)
-
-
-# ---------------------------------------------------------------------------
-# Per-product state  (mirrors featurizer.ProductState)
-# ---------------------------------------------------------------------------
-
-class ProductState:
-    def __init__(self, window_sec: float, horizon_sec: float, vol_threshold: float):
-        self.window_sec    = window_sec
-        self.horizon_sec   = horizon_sec
-        self.vol_threshold = vol_threshold
-        self.price_buf:  deque = deque()
-        self.spread_buf: deque = deque()
-        self.ts_buf:     deque = deque()
-        self.pending:    deque = deque()   # {"row": dict, "ts": float}
-
-    def ingest(self, tick: dict) -> list[dict]:
-        bid   = float(tick["best_bid"])
-        ask   = float(tick["best_ask"])
-        price = float(tick["price"])
-        ts    = _parse_ts(tick["timestamp"])
-
-        mid    = compute_midprice(bid, ask)
-        spread = compute_spread(bid, ask, mid)
-
-        prev_price = self.price_buf[-1]["price"] if self.price_buf else price
-        log_ret    = compute_return(price, prev_price)
-
-        self.price_buf.append({"price": price, "ts": ts})
-        self.spread_buf.append({"spread_abs": spread["spread_abs"], "ts": ts})
-        self.ts_buf.append(ts)
-
-        cutoff = ts - BUFFER_MAX_AGE
-        while self.price_buf and self.price_buf[0]["ts"] < cutoff:
-            self.price_buf.popleft()
-        while self.spread_buf and self.spread_buf[0]["ts"] < cutoff:
-            self.spread_buf.popleft()
-        while self.ts_buf and self.ts_buf[0] < cutoff:
-            self.ts_buf.popleft()
-
-        rolling     = compute_rolling_stats(self.price_buf, self.window_sec)
-        intensity   = compute_trade_intensity(self.ts_buf, self.window_sec)
-        spread_mean = compute_spread_mean(self.spread_buf, self.window_sec)
-
-        features = {
-            "product_id":          tick["product_id"],
-            "timestamp":           tick["timestamp"],
-            "price":               price,
-            "midprice":            mid,
-            "log_return":          log_ret,
-            "spread_abs":          spread["spread_abs"],
-            "spread_bps":          spread["spread_bps"],
-            "vol_60s":             rolling["vol"],
-            "mean_return_60s":     rolling["mean_return"],
-            "n_ticks_60s":         rolling["n_ticks"],
-            "trade_intensity_60s": intensity,
-            "spread_mean_60s":     spread_mean,
-            "price_range_60s":     rolling["price_range"],
-        }
-
-        self.pending.append({"row": features, "ts": ts})
-        return self._drain(ts)
-
-    def drain_remaining(self) -> list[dict]:
-        if not self.price_buf:
-            return []
-        return self._drain(self.price_buf[-1]["ts"], force=True)
-
-    def _drain(self, ts_now: float, force: bool = False) -> list[dict]:
-        ready = []
-        while self.pending:
-            entry = self.pending[0]
-            if not force and ts_now - entry["ts"] < self.horizon_sec:
-                break
-
-            self.pending.popleft()
-            t_start = entry["ts"]
-            t_end   = t_start + self.horizon_sec
-            future_slice = deque(
-                e for e in self.price_buf if t_start <= e["ts"] <= t_end
-            )
-
-            future_vol = compute_future_vol(future_slice, self.horizon_sec)
-
-            if future_vol is None:
-                continue
-
-            ready.append({
-                **entry["row"],
-                "future_vol_60s": future_vol,
-                "vol_spike": int(future_vol > self.vol_threshold),
-            })
-        return ready
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +112,7 @@ def _iter_file_ticks(path: str):
                 continue
             try:
                 tick = json.loads(line)
-                yield _parse_ts(tick["timestamp"]), tick
+                yield parse_timestamp(tick["timestamp"]), tick
             except (json.JSONDecodeError, KeyError) as exc:
                 log.warning("%s:%d — skipped (%s)", path, lineno, exc)
 
@@ -310,13 +203,12 @@ def main():
     args = parser.parse_args()
 
     cfg           = load_config(args.config)
-    window_sec    = float(cfg["features"]["window_seconds"])
     horizon_sec   = float(cfg["features"]["label_horizon_sec"])
     vol_threshold = float(cfg["features"]["vol_threshold"])
     out_path      = Path(args.out or cfg["data"]["features_file"])
 
     sink   = ParquetSink(out_path)
-    states: dict[str, ProductState] = {}
+    states: dict[str, FeatureEngine] = {}
     emitted = 0
     pending_count = 0
 
@@ -338,7 +230,7 @@ def main():
             break
         pid = tick.get("product_id", "unknown")
         if pid not in states:
-            states[pid] = ProductState(window_sec, horizon_sec, vol_threshold)
+            states[pid] = FeatureEngine(FEATURE_SET_ID, horizon_sec, vol_threshold)
 
         try:
             rows = states[pid].ingest(tick)
