@@ -7,6 +7,7 @@ Run from the repo root with either:
 """
 
 import json
+import pickle
 import os
 import socket
 import subprocess
@@ -16,6 +17,8 @@ from pathlib import Path
 
 import pytest
 import requests
+
+from scripts.feature_to_predict_bridge import _build_row
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
@@ -30,6 +33,7 @@ SAMPLE_ROW = {
     "n_ticks_60s": 50,
     "spread_mean_60s": 1.2,
 }
+FEATURE_COLS = list(SAMPLE_ROW)
 
 
 def _reserve_port() -> int:
@@ -135,6 +139,77 @@ def test_version_source(base_url):
     assert "stage" in body
 
 
+def test_nondefault_registered_candidate_never_silently_uses_the_legacy_pickle():
+    """A Staging candidate must fail closed when its registry is unavailable."""
+    env = os.environ.copy()
+    env.update(
+        {
+            "MODEL_PATH": str(MODEL_PATH),
+            "MODEL_NAME": "btc-volatility-candidate",
+            "MODEL_STAGE": "Staging",
+            "MLFLOW_TRACKING_URI": "http://127.0.0.1:99999",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "import api.main"],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+
+    assert result.returncode != 0
+    assert "candidate" in (result.stdout + result.stderr).lower()
+
+
+def test_registered_candidate_requires_feature_identity_on_every_request(tmp_path):
+    """Legacy payload compatibility must not bypass a candidate's schema gate."""
+    import mlflow
+    import mlflow.sklearn
+    from mlflow.tracking import MlflowClient
+
+    tracking_uri = tmp_path.as_uri()
+    mlflow.set_tracking_uri(tracking_uri)
+    experiment = mlflow.set_experiment("candidate-contract-test")
+    with open(MODEL_PATH, "rb") as artifact:
+        pipeline = pickle.load(artifact)["pipeline"]
+    with mlflow.start_run(experiment_id=experiment.experiment_id) as run:
+        mlflow.log_params({
+            "feature_cols": ",".join(FEATURE_COLS),
+            "feature_set_id": "multi_window_v1",
+            "feature_schema_version": "2",
+            "tau": "0.5",
+        })
+        mlflow.sklearn.log_model(pipeline, "model")
+        run_id = run.info.run_id
+    version = mlflow.register_model(f"runs:/{run_id}/model", "btc-volatility-candidate")
+    MlflowClient(tracking_uri).transition_model_version_stage(
+        "btc-volatility-candidate", version.version, "Staging"
+    )
+
+    port = _reserve_port()
+    env = os.environ.copy()
+    env.update({
+        "MODEL_NAME": "btc-volatility-candidate",
+        "MODEL_STAGE": "Staging",
+        "MLFLOW_TRACKING_URI": tracking_uri,
+    })
+    process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "api.main:app", "--host", HOST, "--port", str(port)],
+        cwd=PROJECT_ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    url = f"http://{HOST}:{port}"
+    try:
+        _wait_for_api(url, process)
+        response = requests.post(url + "/predict", json={"rows": [SAMPLE_ROW]}, timeout=5)
+        assert response.status_code == 422
+        assert "feature_set_id is required" in response.text
+    finally:
+        process.terminate()
+        process.communicate(timeout=10)
+
+
 def test_predict_single(base_url):
     r = requests.post(f"{base_url}/predict", json={"rows": [SAMPLE_ROW]}, timeout=5)
     assert r.status_code == 200
@@ -142,6 +217,69 @@ def test_predict_single(base_url):
     assert len(body["scores"]) == 1
     assert 0.0 <= body["scores"][0] <= 1.0
     assert body["model_variant"] == "ml"
+
+
+def test_predict_accepts_legacy_v1_payload(base_url):
+    response = requests.post(
+        f"{base_url}/predict", json={"rows": [SAMPLE_ROW]}, timeout=5
+    )
+    assert response.status_code == 200
+
+
+def test_predict_accepts_registered_numeric_extra_features(base_url):
+    payload = {
+        "rows": [
+            {
+                **SAMPLE_ROW,
+                "feature_set_id": "core_v1",
+                "feature_schema_version": "1",
+                "price_range_60s": 0.0002,
+            }
+        ]
+    }
+    response = requests.post(f"{base_url}/predict", json=payload, timeout=5)
+    assert response.status_code == 200
+
+
+def test_predict_rejects_registered_feature_version_mismatch(base_url):
+    payload = {"rows": [{**SAMPLE_ROW, "feature_schema_version": "wrong"}]}
+    response = requests.post(f"{base_url}/predict", json=payload, timeout=5)
+    assert response.status_code == 422
+    assert "feature_schema_version" in response.text
+
+
+def test_bridge_row_preserves_registered_versions_through_api_validation(base_url):
+    """The real bridge row must retain the API's registered feature contract."""
+    feature_message = {
+        **SAMPLE_ROW,
+        "timestamp": "2026-07-21T12:00:00Z",
+        "feature_set_id": "core_v1",
+        "feature_schema_version": "1",
+    }
+
+    bridge_row = _build_row(feature_message, kafka_timestamp_ms=None)
+
+    assert bridge_row["feature_set_id"] == "core_v1"
+    assert bridge_row["feature_schema_version"] == "1"
+    accepted = requests.post(f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5)
+    assert accepted.status_code == 200
+
+    bridge_row["feature_schema_version"] = "altered"
+    rejected = requests.post(f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5)
+    assert rejected.status_code == 422
+    assert "feature_schema_version" in rejected.text
+
+
+@pytest.mark.parametrize("value", [True, "not-a-number", float("nan"), float("inf")])
+def test_predict_rejects_invalid_extra_feature_values(base_url, value):
+    payload = {"rows": [{**SAMPLE_ROW, "price_range_60s": value}]}
+    response = requests.post(
+        f"{base_url}/predict",
+        data=json.dumps(payload),
+        headers={"Content-Type": "application/json"},
+        timeout=5,
+    )
+    assert response.status_code == 422
 
 
 def test_predict_batch(base_url):

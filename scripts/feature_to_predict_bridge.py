@@ -38,15 +38,7 @@ API_TIMEOUT = float(os.getenv("PREDICT_API_TIMEOUT", "10"))
 STARTUP_TIMEOUT = float(os.getenv("STARTUP_TIMEOUT", "30"))
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "2"))
 
-FEATURE_COLS = [
-    "log_return",
-    "spread_bps",
-    "vol_60s",
-    "mean_return_60s",
-    "trade_intensity_60s",
-    "n_ticks_60s",
-    "spread_mean_60s",
-]
+NON_MODEL_FIELDS = {"product_id", "timestamp", "future_vol_60s", "vol_spike"}
 
 
 def _wait_for_kafka(consumer: Consumer, timeout: float) -> None:
@@ -89,17 +81,13 @@ def _isoformat_utc(timestamp_ms: int) -> str:
 
 
 def _build_row(message: dict, kafka_timestamp_ms: int | None) -> dict:
-    missing = [col for col in FEATURE_COLS if col not in message]
-    if missing:
-        raise KeyError(f"feature row missing required fields: {missing}")
-
-    row = {col: message[col] for col in FEATURE_COLS}
+    row = {key: value for key, value in message.items() if key not in NON_MODEL_FIELDS}
     # Prefer the Kafka publish timestamp so API freshness reflects the real
     # feature-to-predict hop rather than the archived market capture time.
     if kafka_timestamp_ms and kafka_timestamp_ms > 0:
         row["ts"] = _isoformat_utc(kafka_timestamp_ms)
-    elif "timestamp" in message and message["timestamp"]:
-        row["ts"] = message["timestamp"]
+    else:
+        row["ts"] = message.get("timestamp")
     return row
 
 

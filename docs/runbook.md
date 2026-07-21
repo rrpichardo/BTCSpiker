@@ -34,8 +34,9 @@ curl http://localhost:8000/health      # → {"status":"ok"}
 No manual steps are required on a fresh clone. A one-shot `mlflow-init`
 service runs automatically during `docker compose up` — it executes
 [scripts/log_model_to_mlflow.py](../scripts/log_model_to_mlflow.py) to
-log the trained pipeline to MLflow and promote version 1 to stage
-`Production`. The `api` service gates on `mlflow-init` completing
+log the fixed legacy `btc-volatility-lr` pipeline to MLflow and promote its
+registered version to stage `Production`. It never promotes a candidate model.
+The `api` service gates on `mlflow-init` completing
 successfully (`service_completed_successfully`), so by the time `/health`
 returns OK the registry is already populated.
 
@@ -242,3 +243,108 @@ python scripts/drift_report.py \
 docker compose down                    # keeps volumes (Kafka, MLflow, Grafana state)
 docker compose down -v                 # nukes everything
 ```
+
+---
+
+## Existing-data prediction-quality operations
+
+This workflow is local and research-safe. It uses an already-collected corpus;
+it never downloads, generates, collects, or waits for market data. Insufficient
+coverage changes the qualification to research-only/provisional language and
+does **not** pause the goal.
+
+```bash
+cp .env.example .env                    # optional runtime configuration
+export BTCSPIKER_EXISTING_DATA="$PWD/data/processed/features.parquet"
+export BTCSPIKER_ARTIFACT_ROOT="$PWD/.artifacts/btcspiker"
+```
+
+`BTCSPIKER_EXISTING_DATA` takes precedence when binding the corpus.
+`experiment.yaml` is the current source of truth for `storage.artifact_root`;
+set its `storage.artifact_root` to the same value as
+`BTCSPIKER_ARTIFACT_ROOT` before running scripts if you choose another local
+artifact root. Bind and profile the exact corpus before starting a search:
+
+```bash
+python scripts/bind_existing_dataset.py --config experiment.yaml
+# Copy the printed dataset id into DATASET_ID.
+python scripts/profile_dataset.py --config experiment.yaml --dataset-id "$DATASET_ID"
+```
+
+MLflow uses the local file store in `experiment.yaml`
+(`file:.artifacts/btcspiker/mlruns`) for the `btc-volatility-tournament`
+experiment. When the Compose UI is running, its URL is http://localhost:5001;
+the local experiment is still the source of record for this workflow.
+
+Run stages in this immutable order, passing `--resume` only after an interrupted
+search with the same dataset, feature set, target, validation contract, and git
+revision:
+
+```bash
+for STAGE in baseline linear trees ablation ensemble neural; do
+  python scripts/run_experiments.py --config experiment.yaml \
+    --dataset-id "$DATASET_ID" --stage "$STAGE"
+done
+# On an interrupted compatible state:
+python scripts/run_experiments.py --config experiment.yaml \
+  --dataset-id "$DATASET_ID" --stage trees --resume
+```
+
+The persisted resume record is `.experiment-state/<search-id>.json`. Do not
+edit it to open the final holdout. The holdout stays sealed through development
+and can be opened once by `scripts/qualify_candidate.py` only after the required
+development stages complete.
+
+Qualification requires a completed candidate run plus an evidence JSON produced
+by the evaluation workflow:
+
+```bash
+python scripts/qualify_candidate.py "$RUN_ID" "$EVIDENCE_JSON" \
+  --search-state ".experiment-state/$SEARCH_ID.json" \
+  --tracking-uri "file:$BTCSPIKER_ARTIFACT_ROOT/mlruns" \
+  --artifact-root "$BTCSPIKER_ARTIFACT_ROOT"
+```
+
+Only all-pass evidence registers `btc-volatility-candidate` in Staging. Smoke
+test that registration without touching Production:
+
+```bash
+curl -s http://localhost:5001/api/2.0/mlflow/registered-models/search | jq .
+curl -s http://localhost:8000/version | jq '{model,stage,source,run_id}'
+# Confirm the candidate is Staging if qualified; confirm Production is unchanged.
+```
+
+Export a selected run only after its qualification result is final; exports are
+immutable and written below `$BTCSPIKER_ARTIFACT_ROOT/mlflow-exports/`:
+
+```bash
+python - <<'PY'
+import os
+from pathlib import Path
+from btcspiker_ml.export import export_run
+manifest = export_run(os.environ["RUN_ID"], Path(os.environ["BTCSPIKER_ARTIFACT_ROOT"]))
+print(manifest.destination)
+print(manifest.verify())
+PY
+```
+
+For an already-created export, recompute every digest in `export-manifest.json`
+before reporting it:
+
+```bash
+python - <<'PY'
+import hashlib, json, os
+from pathlib import Path
+root = Path(os.environ["BTCSPIKER_ARTIFACT_ROOT"]) / "mlflow-exports" / f"run_id={os.environ['RUN_ID']}"
+manifest = json.loads((root / "export-manifest.json").read_text())
+for relative, expected in manifest["files"].items():
+    actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+    assert actual == expected, f"checksum mismatch: {relative}"
+print(f"verified {len(manifest['files'])} files in {root}")
+PY
+```
+
+If a Staging smoke test is bad, do not promote it; retain
+the current Production version and use the normal `MODEL_VARIANT=baseline`
+rollback above for runtime safety. The full contract and final-report schema are
+in [`goals/prediction-quality-goal.md`](goals/prediction-quality-goal.md).

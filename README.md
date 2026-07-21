@@ -29,8 +29,9 @@ curl http://localhost:8000/health
 Use this root README together with the root `docker-compose.yaml` as the only startup guide for the project.
 
 No manual model registration is required on a fresh clone — a one-shot
-`mlflow-init` container logs the trained pipeline to MLflow and promotes
-it to `Production` automatically, and the `api` gates on that completing.
+`mlflow-init` container logs the trained pipeline to MLflow. The prediction
+quality tournament never promotes a candidate automatically: qualifying work
+may register **Staging** only, while Production remains unchanged.
 See [First-Time Setup in the runbook](docs/runbook.md#first-time-setup)
 for the verification commands and notes on the shared `mlflow-data`
 volume.
@@ -147,6 +148,7 @@ config.yaml           Featurizer config
 | [`docs/latency_report.md`](docs/latency_report.md) | Load-test methodology and percentiles |
 | [`docs/drift_summary.md`](docs/drift_summary.md) | Evidently train-vs-test drift findings |
 | [`docs/runbook.md`](docs/runbook.md) | Cold start, smoke test, rollback, common failures, recovery |
+| [`docs/goals/prediction-quality-goal.md`](docs/goals/prediction-quality-goal.md) | Durable existing-data experiment charter and final-report contract |
 | [`docs/Architecture Diagram.png`](docs/Architecture%20Diagram.png) | Canonical system architecture diagram |
 | [`docs/architecture.svg`](docs/architecture.svg) | Earlier simplified diagram (optional reference) |
 | [`docs/grafana_dashboard.png`](docs/grafana_dashboard.png) | Grafana dashboard screenshot |

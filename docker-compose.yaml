@@ -103,7 +103,7 @@ services:
       retries: 10
       start_period: 20s
 
-  # ---- One-shot: register LR pipeline in MLflow and promote to Production ----
+  # ---- One-shot: register the fixed legacy LR pipeline in MLflow/Production ----
   # Runs after mlflow is healthy; the api waits for this before starting so it
   # can load the model directly from the registry on first boot.
   mlflow-init:
@@ -114,7 +114,9 @@ services:
     environment:
       # Use internal Docker service name + container port (5000), not host port
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      MODEL_NAME: ${MODEL_NAME:-btc-volatility-lr}
+      # Fixed legacy bootstrap only. Candidate registration and any promotion
+      # are intentionally outside this Compose startup path.
+      MODEL_NAME: btc-volatility-lr
       BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
     volumes:
       - ./handoff:/app/handoff:ro
@@ -155,6 +157,8 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MODEL_NAME: ${MODEL_NAME:-btc-volatility-lr}
       MODEL_STAGE: ${MODEL_STAGE:-Production}
+      # Candidate smoke test (Staging is explicit; Production remains default):
+      # MODEL_NAME=btc-volatility-candidate MODEL_STAGE=Staging docker compose up -d --build api predict-bridge
     # Mount the shared MLflow artifact volume so the API can resolve
     # `models:/...` URIs directly from /mlruns/artifacts on disk. Without this
     # mount, the registry lookup still succeeds over REST but the artifact

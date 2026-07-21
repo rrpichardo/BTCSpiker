@@ -18,6 +18,11 @@ data/
 # MLflow local runs
 mlruns/
 
+# ML experimentation cache/artifact/state directories
+.cache/btcspiker/
+.artifacts/btcspiker/
+.experiment-state/
+
 # IDE
 .vscode/
 .idea/

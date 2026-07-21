@@ -1,5 +1,5 @@
 """
-Log the trained LR pipeline to MLflow and register it under stage Production.
+Log the trained LR pipeline to MLflow and bootstrap its registry entry.
 
 Reads env vars:
   MLFLOW_TRACKING_URI  (default: http://localhost:5001)
@@ -8,7 +8,7 @@ Reads env vars:
   FEATURES_PATH        (default: handoff/data_sample/features_slice.csv)
   BASELINE_VOL_THRESHOLD (default: 0.000048)
 
-Idempotent: if a Production version already tagged with the same pickle SHA256
+Idempotent: if a registry version already tagged with the same pickle SHA256
 exists, the script skips logging and exits cleanly.
 """
 
@@ -36,6 +36,7 @@ FEATURES_PATH = os.getenv(
     "FEATURES_PATH", "handoff/data_sample/features_slice.csv"
 )
 BASELINE_VOL_THRESHOLD = float(os.getenv("BASELINE_VOL_THRESHOLD", "0.000048"))
+LEGACY_BOOTSTRAP_MODEL_NAME = "btc-volatility-lr"
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 client = MlflowClient(MLFLOW_TRACKING_URI)
@@ -50,10 +51,10 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _get_production_version_with_hash(model_name: str, pickle_hash: str):
-    # Return the first Production model version whose pickle_hash tag matches
+def _get_registered_version_with_hash(model_name: str, pickle_hash: str):
+    # Return a registry version with this pickle hash, in any stage.
     try:
-        versions = client.get_latest_versions(model_name, stages=["Production"])
+        versions = client.search_model_versions(f"name='{model_name}'")
     except Exception:
         # Model not registered yet
         return None
@@ -63,6 +64,18 @@ def _get_production_version_with_hash(model_name: str, pickle_hash: str):
     return None
 
 
+def _ensure_legacy_bootstrap_production(model_name: str, version: str) -> None:
+    """Promote only the fixed legacy bootstrap model, never a candidate."""
+    if model_name != LEGACY_BOOTSTRAP_MODEL_NAME:
+        return
+    client.transition_model_version_stage(
+        model_name,
+        version,
+        "Production",
+        archive_existing_versions=True,
+    )
+
+
 def main():
     # ------------------------------------------------------------------
     # 1. Load pickle bundle and compute hash for idempotency
@@ -70,8 +83,8 @@ def main():
     # Compute hash of the source pickle for matching against registry tags
     pickle_hash = _sha256_file(MODEL_ARTIFACT_PATH)
 
-    # Look for an existing Production version tagged with this exact pickle hash
-    existing = _get_production_version_with_hash(MODEL_NAME, pickle_hash)
+    # Look for any existing registry version tagged with this exact pickle hash.
+    existing = _get_registered_version_with_hash(MODEL_NAME, pickle_hash)
     if existing is not None:
         # Registry remembers this version, but its artifact directory may have
         # been lost (e.g. a partial volume reset that kept the sqlite db but
@@ -79,16 +92,17 @@ def main():
         # if the artifact download fails, treat it as not-registered and fall
         # through to the re-registration path below so cold-start recovers.
         try:
-            mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/Production")
+            mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{existing.version}")
         except Exception as exc:
             print(
-                f"Production version {existing.version} exists in the registry "
+                f"Registry version {existing.version} exists "
                 f"but its artifacts are not loadable ({exc}); re-registering."
             )
         else:
             # Artifacts are present AND loadable — safe to skip re-upload
+            _ensure_legacy_bootstrap_production(MODEL_NAME, existing.version)
             print(
-                f"Production version already exists with same pickle hash "
+                f"Registry version already exists with same pickle hash "
                 f"(run_id={existing.run_id}). Skipping."
             )
             print(existing.run_id)
@@ -140,10 +154,10 @@ def main():
         )
 
     # ------------------------------------------------------------------
-    # 4. Promote the just-registered version to Production
+    # 4. Tag the just-registered version for idempotent future bootstraps.
     # ------------------------------------------------------------------
     # get_latest_versions returns the newest version just registered above
-    versions = client.get_latest_versions(MODEL_NAME, stages=["None"])
+    versions = client.search_model_versions(f"name='{MODEL_NAME}'")
     # Sort by version number descending to get the one we just created
     versions_sorted = sorted(versions, key=lambda v: int(v.version), reverse=True)
     new_version = versions_sorted[0]
@@ -152,14 +166,7 @@ def main():
     client.set_model_version_tag(
         MODEL_NAME, new_version.version, "pickle_hash", pickle_hash
     )
-
-    # Transition to Production (archive any existing Production versions first)
-    client.transition_model_version_stage(
-        name=MODEL_NAME,
-        version=new_version.version,
-        stage="Production",
-        archive_existing_versions=True,
-    )
+    _ensure_legacy_bootstrap_production(MODEL_NAME, new_version.version)
 
     print(run_id)
 
