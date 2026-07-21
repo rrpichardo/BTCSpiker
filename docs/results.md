@@ -109,3 +109,68 @@ Full report in [`drift_summary.md`](./drift_summary.md). One-line version: 3 of 
 - The **reliability** budget is enforced by Compose healthchecks + restart policies + a documented runbook, but does not yet have a long-horizon measured uptime number.
 - The **model** earns its keep over the trivial baseline (+8.9 % test PR-AUC) and the rollback to that baseline is a one-environment-variable change with sub-10-second propagation.
 - Drift is **monitored**, not yet **alerted on** — a natural next step is tightening manual review cadence and adding Prometheus alert rules on the dashboard's existing panels.
+
+---
+
+## Existing-data tournament — provisional research result (2026-07-21)
+
+This section is the evidence record for the separate existing-data prediction
+quality goal. It does not alter the shipped runtime scorecard above and does
+not authorize a registry or Production change.
+
+| Field | Evidence |
+|---|---|
+| Result status | **Provisional, research-only** (`qualification_data=false`) |
+| Dataset ID / search ID | `07d95c0d0c8224d8cda43f20122604394694fcc80191cc3b81fd856ec5dbe136` |
+| Manifest / source SHA-256 | `.artifacts/btcspiker/manifests/existing-07d95c0d0c8224d8cda43f20122604394694fcc80191cc3b81fd856ec5dbe136.json` / `a72e3062a3e434bf80020b3869679e930f125414ddb5cbaea1e9ec090794fc41` |
+| Corpus | 788,465 rows, 2026-04-04 22:54:57Z to 2026-04-15 23:05:52Z (11.0 calendar days) |
+| MLflow | local `btc-volatility-tournament`, `file:.artifacts/btcspiker/mlruns` |
+| Baseline run | `382f4f034d16479c81603582870d30a5` (parent `2ecf6779ad304290b16674dd121a5614`) |
+| Best development candidate | linear logistic `52f8a399422e47e5a352776e22c24363` (parent `979783065a4d4b8f8e8b5c06f3b91446`) |
+| Qualification / Staging | Fails the fixed coverage gate; no qualification execution, no candidate registration, and no Staging version |
+| Final holdout | **Sealed and unopened**: `final_holdout_opened=false`, `final_holdout_accessed_at=null`; therefore no final-holdout metric exists |
+| Latency / runtime proof | No new tournament latency, replay, API, or rollback execution was performed in this final proof; the legacy runtime evidence above remains separate |
+| Local export | No `mlflow-exports/run_id=.../export-manifest.json` exists for this provisional candidate, so no production-run checksum claim is made |
+
+The 30-day credibility threshold is a hard Staging requirement. The 11-day
+corpus therefore blocks qualification only; it does not pause the completed
+research workflow or justify opening the holdout. The development winner may
+not be described as out-of-sample improved, deployable, Staging-qualified, or
+Production-ready.
+
+### Development fold metrics
+
+All values below are five purged expanding **development** folds, not
+final-holdout results.
+
+| Candidate | Run ID | Fold PR-AUC (0–4) | Aggregate PR-AUC |
+|---|---|---|---:|
+| Development-prevalence baseline | `382f4f034d16479c81603582870d30a5` | 0.078456, 0.173348, 0.211086, 0.135142, 0.074766 | 0.134560 |
+| Seven-feature logistic (winner) | `52f8a399422e47e5a352776e22c24363` | 0.081558, 0.328018, 0.357542, 0.361186, 0.205261 | **0.266713** |
+| Bounded HistGradientBoosting | `0a6f765cd59e4d8394dee24f4892b7b8` | recorded in MLflow | 0.221710 |
+| Logistic without `vol_60s` | `f5de3ecaa43342599fc88be84b870c92` | recorded in MLflow | 0.251999 |
+| Mean logistic/tree ensemble | `6c0a158aa2c8461b8f9bc2038cc1f815` | recorded in MLflow | 0.252577 |
+
+No bootstrap interval was produced for the provisional run, and its absence is
+another reason no Staging claim is made. The neural parent
+`bb22ea9ffa9c4629aaa2fbdfa2b03a07` is a finished, reason-coded skipped run:
+bounded tree evidence did not establish a progress plateau.
+
+### MLflow lineage and remaining blockers
+
+The completed stage parents are baseline `2ecf6779ad304290b16674dd121a5614`,
+linear `979783065a4d4b8f8e8b5c06f3b91446`, trees
+`5b080c0edba0412293fa2684470d323b`, ablation
+`beb72d716892450495fb6a10a5f18aa5`, ensemble
+`05e9fc2380ea412a98e4e326d7875932`, and skipped neural
+`bb22ea9ffa9c4629aaa2fbdfa2b03a07`. The EDA run is
+`e0bd525fcbd546dda68778d8d4b77181`.
+
+This bounded tournament contains finished development trials and one skipped
+parent; it contains no actual pruned or failed trial lineage. The orchestration
+and export tests cover those statuses, but they are not substituted for
+production-run evidence. The remaining blockers are: sub-30-day coverage,
+no final-holdout qualification (intentionally sealed), no bootstrap/latency or
+runtime verification for the candidate, no Staging smoke test, and no local
+export manifest. Production remains the legacy champion unless separately
+approved.
