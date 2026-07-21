@@ -14,6 +14,7 @@ Model loading priority (ml variant only):
 """
 
 import logging
+import math
 import os
 import pickle
 import subprocess
@@ -24,7 +25,8 @@ from pathlib import Path
 import mlflow
 import mlflow.sklearn
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from mlflow.tracking import MlflowClient
 from prometheus_client import (
     Counter,
@@ -33,8 +35,8 @@ from prometheus_client import (
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
-from pydantic import BaseModel, Field
-from starlette.responses import Response
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +69,13 @@ FEATURE_COLS_DEFAULT = [
     "n_ticks_60s",
     "spread_mean_60s",
 ]
+FEATURE_SET_ID_DEFAULT = "core_v1"
+FEATURE_SCHEMA_VERSION_DEFAULT = "1"
 
 PIPELINE = None
 FEATURE_COLS = FEATURE_COLS_DEFAULT
+FEATURE_SET_ID = FEATURE_SET_ID_DEFAULT
+FEATURE_SCHEMA_VERSION = FEATURE_SCHEMA_VERSION_DEFAULT
 TAU: float | None = None
 
 # Module-level variables set by whichever load path succeeds
@@ -92,9 +98,15 @@ if MODEL_VARIANT == "ml":
         # Load the sklearn pipeline via the sklearn flavor (gives predict_proba)
         PIPELINE = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{MODEL_STAGE}")
 
-        # Retrieve feature_cols and tau that were stored as run params
+        # Retrieve the complete feature contract stored with the registered run.
         _run = _client.get_run(mlflow_run_id)
         FEATURE_COLS = _run.data.params["feature_cols"].split(",")
+        FEATURE_SET_ID = _run.data.params.get(
+            "feature_set_id", FEATURE_SET_ID_DEFAULT
+        )
+        FEATURE_SCHEMA_VERSION = _run.data.params.get(
+            "feature_schema_version", FEATURE_SCHEMA_VERSION_DEFAULT
+        )
         TAU = float(_run.data.params["tau"])
 
         model_source = "mlflow"
@@ -112,6 +124,10 @@ if MODEL_VARIANT == "ml":
 
         PIPELINE = _bundle["pipeline"]
         FEATURE_COLS = _bundle["feature_cols"]
+        FEATURE_SET_ID = _bundle.get("feature_set_id", FEATURE_SET_ID_DEFAULT)
+        FEATURE_SCHEMA_VERSION = _bundle.get(
+            "feature_schema_version", FEATURE_SCHEMA_VERSION_DEFAULT
+        )
         TAU = _bundle["tau"]
         model_source = "pickle"
         mlflow_run_id = None
@@ -176,6 +192,8 @@ class TickRow(BaseModel):
     and the prediction service accepts the engineered 60-second features below.
     """
 
+    model_config = ConfigDict(extra="allow")
+
     log_return: float = Field(
         description="Instantaneous log-return vs the previous tick."
     )
@@ -200,6 +218,37 @@ class TickRow(BaseModel):
             "feature_freshness_seconds."
         ),
     )
+    feature_set_id: str | None = Field(
+        default=None,
+        description="Optional identifier for the deployed feature set.",
+    )
+    feature_schema_version: str | None = Field(
+        default=None,
+        description="Optional schema version for the deployed feature set.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def numeric_features_are_finite(cls, value):
+        if not isinstance(value, dict):
+            return value
+        metadata_fields = {"ts", "feature_set_id", "feature_schema_version"}
+        invalid = [
+            name
+            for name, feature_value in value.items()
+            if name not in metadata_fields
+            and (
+                isinstance(feature_value, bool)
+                or not isinstance(feature_value, (int, float))
+                or not math.isfinite(feature_value)
+            )
+        ]
+        if invalid:
+            raise ValueError(
+                "feature values must be finite numeric values; invalid fields: "
+                + ", ".join(sorted(invalid))
+            )
+        return value
 
 
 class PredictRequest(BaseModel):
@@ -242,7 +291,17 @@ class VersionResponse(BaseModel):
 
 
 def _score_ml(rows: list[TickRow]) -> list[float]:
-    X = np.array([[getattr(row, col) for col in FEATURE_COLS] for row in rows])
+    matrices = []
+    for row in rows:
+        payload = row.model_dump()
+        missing = [column for column in FEATURE_COLS if column not in payload]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"feature row missing required columns: {missing}",
+            )
+        matrices.append([payload[column] for column in FEATURE_COLS])
+    X = np.array(matrices)
     y_prob = PIPELINE.predict_proba(X)[:, 1]
     return [round(float(p), 6) for p in y_prob]
 
@@ -261,6 +320,24 @@ SCORERS = {"ml": _score_ml, "baseline": _score_baseline}
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="BTC Volatility Spike Detector")
+
+
+def _json_safe(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, BaseException):
+        return str(value)
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(_request: Request, exc: RequestValidationError):
+    """Keep malformed non-finite JSON payloads on the public 422 path."""
+    return JSONResponse(status_code=422, content={"detail": _json_safe(exc.errors())})
 
 
 @app.get("/health")
@@ -296,6 +373,28 @@ def predict(req: PredictRequest):
     REQUEST_COUNT.labels(model_variant=MODEL_VARIANT).inc()
     start = time.perf_counter()
 
+    for row in req.rows:
+        if row.feature_set_id is not None and row.feature_set_id != FEATURE_SET_ID:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "feature_set_id does not match the registered model: "
+                    f"expected {FEATURE_SET_ID!r}, got {row.feature_set_id!r}"
+                ),
+            )
+        if (
+            row.feature_schema_version is not None
+            and row.feature_schema_version != FEATURE_SCHEMA_VERSION
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "feature_schema_version does not match the registered model: "
+                    f"expected {FEATURE_SCHEMA_VERSION!r}, "
+                    f"got {row.feature_schema_version!r}"
+                ),
+            )
+
     # Update feature freshness gauge when the client supplies a feature timestamp.
     # Without `ts`, the API falls back to request processing lag as a degraded proxy.
     if req.rows and hasattr(req.rows[0], "ts") and req.rows[0].ts:
@@ -317,6 +416,9 @@ def predict(req: PredictRequest):
             version=MODEL_VERSION,
             ts=datetime.now(timezone.utc).isoformat(),
         )
+    except HTTPException:
+        REQUEST_ERRORS.labels(model_variant=MODEL_VARIANT).inc()
+        raise
     except Exception as exc:
         REQUEST_ERRORS.labels(model_variant=MODEL_VARIANT).inc()
         raise HTTPException(status_code=500, detail=str(exc))

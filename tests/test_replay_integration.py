@@ -40,6 +40,7 @@ FEATURE_COLS = [
     "n_ticks_60s",
     "spread_mean_60s",
 ]
+FEATURE_VERSION_COLS = ["feature_set_id", "feature_schema_version"]
 
 
 def _api_healthy() -> bool:
@@ -199,6 +200,13 @@ def test_replay_runtime_drives_prediction_metrics():
     assert feature_msg.get(
         "timestamp"
     ), "Feature messages should carry the timestamp that feeds API freshness."
+    missing_versions = [col for col in FEATURE_VERSION_COLS if col not in feature_msg]
+    assert not missing_versions, (
+        f"Feature message is missing version metadata: {missing_versions}. "
+        f"Message keys: {list(feature_msg.keys())}"
+    )
+    assert feature_msg["feature_set_id"]
+    assert feature_msg["feature_schema_version"]
 
     _wait_for_scalar(
         "sum(predict_requests_total)",

@@ -144,6 +144,47 @@ def test_predict_single(base_url):
     assert body["model_variant"] == "ml"
 
 
+def test_predict_accepts_legacy_v1_payload(base_url):
+    response = requests.post(
+        f"{base_url}/predict", json={"rows": [SAMPLE_ROW]}, timeout=5
+    )
+    assert response.status_code == 200
+
+
+def test_predict_accepts_registered_numeric_extra_features(base_url):
+    payload = {
+        "rows": [
+            {
+                **SAMPLE_ROW,
+                "feature_set_id": "core_v1",
+                "feature_schema_version": "1",
+                "price_range_60s": 0.0002,
+            }
+        ]
+    }
+    response = requests.post(f"{base_url}/predict", json=payload, timeout=5)
+    assert response.status_code == 200
+
+
+def test_predict_rejects_registered_feature_version_mismatch(base_url):
+    payload = {"rows": [{**SAMPLE_ROW, "feature_schema_version": "wrong"}]}
+    response = requests.post(f"{base_url}/predict", json=payload, timeout=5)
+    assert response.status_code == 422
+    assert "feature_schema_version" in response.text
+
+
+@pytest.mark.parametrize("value", [True, "not-a-number", float("nan"), float("inf")])
+def test_predict_rejects_invalid_extra_feature_values(base_url, value):
+    payload = {"rows": [{**SAMPLE_ROW, "price_range_60s": value}]}
+    response = requests.post(
+        f"{base_url}/predict",
+        data=json.dumps(payload),
+        headers={"Content-Type": "application/json"},
+        timeout=5,
+    )
+    assert response.status_code == 422
+
+
 def test_predict_batch(base_url):
     r = requests.post(f"{base_url}/predict", json={"rows": [SAMPLE_ROW] * 5}, timeout=5)
     assert r.status_code == 200
