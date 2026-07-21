@@ -103,7 +103,7 @@ services:
       retries: 10
       start_period: 20s
 
-  # ---- One-shot: register LR pipeline in MLflow and promote to Production ----
+  # ---- One-shot: register the fixed legacy LR pipeline in MLflow/Production ----
   # Runs after mlflow is healthy; the api waits for this before starting so it
   # can load the model directly from the registry on first boot.
   mlflow-init:
@@ -114,9 +114,9 @@ services:
     environment:
       # Use internal Docker service name + container port (5000), not host port
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      # Keep bootstrap pinned to the legacy baseline: a candidate API smoke
-      # run must never make mlflow-init promote that candidate to Production.
-      MODEL_NAME: ${BOOTSTRAP_MODEL_NAME:-btc-volatility-lr}
+      # Fixed legacy bootstrap only. Candidate registration and any promotion
+      # are intentionally outside this Compose startup path.
+      MODEL_NAME: btc-volatility-lr
       BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
     volumes:
       - ./handoff:/app/handoff:ro

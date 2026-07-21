@@ -36,6 +36,7 @@ FEATURES_PATH = os.getenv(
     "FEATURES_PATH", "handoff/data_sample/features_slice.csv"
 )
 BASELINE_VOL_THRESHOLD = float(os.getenv("BASELINE_VOL_THRESHOLD", "0.000048"))
+LEGACY_BOOTSTRAP_MODEL_NAME = "btc-volatility-lr"
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 client = MlflowClient(MLFLOW_TRACKING_URI)
@@ -63,6 +64,18 @@ def _get_registered_version_with_hash(model_name: str, pickle_hash: str):
     return None
 
 
+def _ensure_legacy_bootstrap_production(model_name: str, version: str) -> None:
+    """Promote only the fixed legacy bootstrap model, never a candidate."""
+    if model_name != LEGACY_BOOTSTRAP_MODEL_NAME:
+        return
+    client.transition_model_version_stage(
+        model_name,
+        version,
+        "Production",
+        archive_existing_versions=True,
+    )
+
+
 def main():
     # ------------------------------------------------------------------
     # 1. Load pickle bundle and compute hash for idempotency
@@ -87,6 +100,7 @@ def main():
             )
         else:
             # Artifacts are present AND loadable — safe to skip re-upload
+            _ensure_legacy_bootstrap_production(MODEL_NAME, existing.version)
             print(
                 f"Registry version already exists with same pickle hash "
                 f"(run_id={existing.run_id}). Skipping."
@@ -152,6 +166,7 @@ def main():
     client.set_model_version_tag(
         MODEL_NAME, new_version.version, "pickle_hash", pickle_hash
     )
+    _ensure_legacy_bootstrap_production(MODEL_NAME, new_version.version)
 
     print(run_id)
 

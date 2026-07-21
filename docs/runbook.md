@@ -34,8 +34,9 @@ curl http://localhost:8000/health      # → {"status":"ok"}
 No manual steps are required on a fresh clone. A one-shot `mlflow-init`
 service runs automatically during `docker compose up` — it executes
 [scripts/log_model_to_mlflow.py](../scripts/log_model_to_mlflow.py) to
-log the trained pipeline to MLflow and promote version 1 to stage
-`Production`. The `api` service gates on `mlflow-init` completing
+log the fixed legacy `btc-volatility-lr` pipeline to MLflow and promote its
+registered version to stage `Production`. It never promotes a candidate model.
+The `api` service gates on `mlflow-init` completing
 successfully (`service_completed_successfully`), so by the time `/health`
 returns OK the registry is already populated.
 
