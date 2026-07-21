@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import mlflow
+import pytest
 
 from btcspiker_ml.search import SearchState, run_stage
 
@@ -25,7 +26,7 @@ def test_run_stage_logs_finished_pruned_failed_and_resume_does_not_duplicate(tmp
     config = _config(tmp_path)
     first = run_stage(config, "d1", "core_v1", "linear")
     assert first.completed_trial_ids == ("ok", "pruned", "bad", "ok-2", "ok-3")
-    second = run_stage(config, "d1", "core_v1", "linear")
+    second = run_stage({**config, "resume": True}, "d1", "core_v1", "linear")
     assert second.completed_trial_ids == ()
     state = SearchState.load(tmp_path / "state" / "search-1.json")
     assert state.completed_stages == ["linear"]
@@ -50,3 +51,14 @@ def test_neural_ineligibility_is_logged_as_finished_skipped_parent(tmp_path: Pat
     assert run.info.status == "FINISHED"
     assert run.data.tags["stage_status"] == "skipped"
     assert "100,000" in run.data.tags["skip_reason"]
+
+
+def test_existing_search_state_requires_explicit_resume_and_same_contract(tmp_path: Path):
+    config = _config(tmp_path)
+    run_stage(config, "d1", "core_v1", "linear")
+    with pytest.raises(ValueError, match="--resume"):
+        run_stage(config, "d1", "core_v1", "trees")
+
+    changed = {**config, "target_version": "different-target", "resume": True}
+    with pytest.raises(ValueError, match="immutable experiment contract"):
+        run_stage(changed, "d1", "core_v1", "trees")

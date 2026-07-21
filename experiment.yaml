@@ -19,7 +19,12 @@ search:
   max_hours: 24
   max_parallel_jobs: 4
   stage_trials: {linear: 30, trees: 80, ablation: 60, ensemble: 30, neural: 10}
+feature_set_id: "core_v1"
+feature_columns: ["log_return", "spread_bps", "vol_60s", "mean_return_60s", "trade_intensity_60s", "n_ticks_60s", "spread_mean_60s"]
+logistic_params: {C: 1.0, max_iter: 1000}
+tree_params: {max_iter: 50, learning_rate: 0.05, max_leaf_nodes: 31, min_samples_leaf: 50}
+ablation_remove: "vol_60s"
 mlflow:
-  tracking_uri: "http://localhost:5001"
+  tracking_uri: "file:.artifacts/btcspiker/mlruns"
   experiment_name: "btc-volatility-tournament"
   registered_model_name: "btc-volatility-candidate"

@@ -7,6 +7,7 @@ promotes a model.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import time
@@ -26,8 +27,27 @@ class SearchState:
     best_run_ids: dict[str, str] = field(default_factory=dict)
     remaining_wall_clock_seconds: float = 0.0
     final_holdout_opened: bool = False
+    final_holdout_accessed_at: str | None = None
     failure_counts: dict[str, int] = field(default_factory=dict)
     completed_trial_ids: dict[str, list[str]] = field(default_factory=dict)
+    experiment_contract: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def new(cls, search_id: str, dataset_id: str, *, wall_clock_seconds: float) -> "SearchState":
+        """Create a state with its final evaluation split sealed."""
+        return cls(
+            search_id=search_id,
+            dataset_id=dataset_id,
+            remaining_wall_clock_seconds=wall_clock_seconds,
+        )
+
+    def open_final_holdout(self, *, requesting_stage: str) -> None:
+        """Permit holdout access only to the explicit post-search qualifier."""
+        required = {"baseline", "linear", "trees", "ablation", "ensemble"}
+        if requesting_stage != "qualification" or self.final_holdout_opened or not required.issubset(self.completed_stages):
+            raise PermissionError("final holdout is sealed")
+        self.final_holdout_opened = True
+        self.final_holdout_accessed_at = datetime.now(timezone.utc).isoformat()
 
     @classmethod
     def load(cls, path: Path) -> "SearchState":
@@ -64,7 +84,15 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
     search_id = str(values["search_id"])
     state_path = Path(values.get("state_dir", ".experiment-state")) / f"{search_id}.json"
     budget = float(values.get("remaining_wall_clock_seconds", values.get("max_hours", 24) * 3600))
+    contract = _contract(values, dataset_id, feature_set_id)
+    if state_path.exists() and not values.get("resume", False):
+        raise ValueError("existing experiment state requires --resume")
     state = SearchState.load_or_create(state_path, search_id=search_id, dataset_id=dataset_id, remaining_wall_clock_seconds=budget)
+    if state.experiment_contract and state.experiment_contract != contract:
+        raise ValueError("immutable experiment contract does not match existing state")
+    if not state.experiment_contract:
+        state.experiment_contract = contract
+        state.save(state_path)
     tracker = ExperimentTracker(str(values.get("experiment_name", "btc-volatility-tournament")), values.get("tracking_uri"))
     parent_lineage = _lineage(values, dataset_id, feature_set_id, stage, model_family=stage)
     parent_id = tracker.start_run(parent_lineage, run_name=f"{stage}-parent")
@@ -115,7 +143,10 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
             state.completed_trial_ids[stage] = sorted(done)
             state.failure_counts[stage] = state.failure_counts.get(stage, 0) + int(failed_this_trial)
             state.save(state_path)
-            if trials and failures / len(trials) > 0.20:
+            # The threshold is over the fixed stage trial budget, not just the
+            # partial prefix executed in this invocation.  The numerator is
+            # persisted, so a resume cannot reset accumulated failures.
+            if trials and state.failure_counts[stage] / len(trials) > 0.20:
                 raise RuntimeError(f"stage {stage} exceeded 20% trial failure threshold")
         if stage not in state.completed_stages:
             state.completed_stages.append(stage)
@@ -141,7 +172,20 @@ def _lineage(values: Mapping[str, Any], dataset_id: str, feature_set_id: str, st
     }
 
 
+def _contract(values: Mapping[str, Any], dataset_id: str, feature_set_id: str) -> dict[str, str]:
+    """Fields that cannot change once a resumable search has begun."""
+    return {
+        "dataset_id": dataset_id,
+        "feature_set_id": feature_set_id,
+        "target_version": str(values.get("target_version", "vol_spike_v1")),
+        "validation_version": str(values.get("validation_version", "walkforward_v1")),
+        "git_sha": str(values.get("git_sha", "unknown")),
+    }
+
+
 def _neural_ineligibility_reason(values: Mapping[str, Any], state: SearchState) -> str | None:
+    if values.get("neural_skip_reason"):
+        return str(values["neural_skip_reason"])
     if int(values.get("labelled_rows", 0)) < 100_000:
         return "neural stage requires at least 100,000 labelled rows"
     positives = values.get("development_fold_positive_events", [])
