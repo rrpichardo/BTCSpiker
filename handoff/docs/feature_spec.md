@@ -2,13 +2,18 @@
 
 ## Label
 
+Operational target name (v1): **`trade_price_future_vol_spike_60s_v1`** — the
+"trade_price" prefix names the price series the volatility is computed on
+(last-trade `price`, not midprice), which matches what `features/featurizer.py`
+actually emits via `compute_future_vol`.
+
 | Parameter         | Value                                                        |
 |-------------------|--------------------------------------------------------------|
 | Target horizon    | 60 seconds                                                   |
-| Volatility proxy  | Rolling std of midprice log-returns over the next 60s        |
+| Volatility proxy  | Rolling std of **last-trade `price`** log-returns over the next 60s |
 | Label definition  | `vol_spike = 1` if `σ_future >= τ`; else `0`                |
 | Chosen threshold τ | **0.000048**                                                |
-| Spike rate at τ   | ~15% of labelled ticks                                       |
+| Spike rate at τ   | ~16% of labelled ticks (measured on the bound corpus)        |
 | ≈ $1σ move @ $60k | $2.88                                                       |
 | Percentile        | P85 — selected via threshold sweep (best val PR-AUC & F1)    |
 
