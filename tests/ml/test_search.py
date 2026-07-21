@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import mlflow
 import pytest
@@ -62,3 +63,39 @@ def test_existing_search_state_requires_explicit_resume_and_same_contract(tmp_pa
     changed = {**config, "target_version": "different-target", "resume": True}
     with pytest.raises(ValueError, match="immutable experiment contract"):
         run_stage(changed, "d1", "core_v1", "trees")
+
+
+def test_partial_resume_reuses_parent_and_keeps_better_persisted_winner(tmp_path: Path):
+    config = _config(tmp_path)
+    config["trials"] = [
+        {"id": "high", "model_family": "logistic", "outcome": "finished", "metrics": {"aggregate_pr_auc": 0.8}},
+    ]
+    first = run_stage(config, "d1", "core_v1", "linear")
+    state_path = tmp_path / "state" / "search-1.json"
+    legacy_state = json.loads(state_path.read_text())
+    legacy_state.pop("best_scores")
+    legacy_state.pop("stage_parent_run_ids")
+    state_path.write_text(json.dumps(legacy_state))
+
+    resumed = {
+        **config,
+        "resume": True,
+        "trials": [
+            *config["trials"],
+            {"id": "low", "model_family": "logistic", "outcome": "finished", "metrics": {"aggregate_pr_auc": 0.2}},
+        ],
+    }
+    second = run_stage(resumed, "d1", "core_v1", "linear")
+
+    state = SearchState.load(state_path)
+    assert second.parent_run_id == first.parent_run_id
+    assert second.completed_trial_ids == ("low",)
+    assert state.stage_parent_run_ids["linear"] == first.parent_run_id
+    assert state.best_run_ids["linear"]
+    assert state.best_scores["linear"] == pytest.approx(0.8)
+
+    client = mlflow.tracking.MlflowClient(tmp_path.as_uri())
+    experiment = client.get_experiment_by_name("search-test")
+    runs = client.search_runs([experiment.experiment_id])
+    parents = [run for run in runs if run.data.tags.get("candidate_stage") == "linear" and not run.data.tags.get("mlflow.parentRunId")]
+    assert len(parents) == 1

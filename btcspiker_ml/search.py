@@ -31,6 +31,8 @@ class SearchState:
     failure_counts: dict[str, int] = field(default_factory=dict)
     completed_trial_ids: dict[str, list[str]] = field(default_factory=dict)
     experiment_contract: dict[str, str] = field(default_factory=dict)
+    best_scores: dict[str, float] = field(default_factory=dict)
+    stage_parent_run_ids: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def new(cls, search_id: str, dataset_id: str, *, wall_clock_seconds: float) -> "SearchState":
@@ -93,11 +95,40 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
     if not state.experiment_contract:
         state.experiment_contract = contract
         state.save(state_path)
-    tracker = ExperimentTracker(str(values.get("experiment_name", "btc-volatility-tournament")), values.get("tracking_uri"))
-    parent_lineage = _lineage(values, dataset_id, feature_set_id, stage, model_family=stage)
-    parent_id = tracker.start_run(parent_lineage, run_name=f"{stage}-parent")
-    started = time.monotonic()
     reason = _neural_ineligibility_reason(values, state) if stage == "neural" else None
+    done = set(state.completed_trial_ids.get(stage, []))
+    trials = list(values.get("trials", []))
+    pending = [
+        (number, trial) for number, trial in enumerate(trials)
+        if str(trial.get("id", number)) not in done
+    ]
+    tracker = ExperimentTracker(str(values.get("experiment_name", "btc-volatility-tournament")), values.get("tracking_uri"))
+    recovered_state = False
+    if stage in state.best_run_ids and stage not in state.best_scores:
+        recovered_score = tracker.run_metric(state.best_run_ids[stage], "aggregate_pr_auc")
+        if recovered_score is not None:
+            state.best_scores[stage] = float(recovered_score)
+            recovered_state = True
+    existing_parent_id = state.stage_parent_run_ids.get(stage) or tracker.find_stage_parent(
+        search_id=search_id, stage=stage,
+    )
+    if existing_parent_id and stage not in state.stage_parent_run_ids:
+        state.stage_parent_run_ids[stage] = existing_parent_id
+        recovered_state = True
+    if recovered_state:
+        state.save(state_path)
+    if not pending and stage in state.completed_stages and existing_parent_id:
+        status = "skipped" if reason else "completed"
+        return StageResult(existing_parent_id, status, (), reason)
+
+    parent_lineage = _lineage(values, dataset_id, feature_set_id, stage, model_family=stage, deployable=False)
+    if existing_parent_id:
+        parent_id = tracker.start_run(parent_lineage, run_id=existing_parent_id)
+    else:
+        parent_id = tracker.start_run(parent_lineage, run_name=f"{stage}-parent")
+        state.stage_parent_run_ids[stage] = parent_id
+        state.save(state_path)
+    started = time.monotonic()
     if reason:
         state.completed_stages.append(stage) if stage not in state.completed_stages else None
         state.remaining_wall_clock_seconds = max(0.0, state.remaining_wall_clock_seconds - (time.monotonic() - started))
@@ -105,32 +136,52 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
         tracker.end_run("FINISHED", extra_tags={"stage_status": "skipped", "skip_reason": reason})
         return StageResult(parent_id, "skipped", (), reason)
 
-    done = set(state.completed_trial_ids.get(stage, []))
     completed_now: list[str] = []
     failures = 0
-    trials = list(values.get("trials", []))
     try:
-        for number, trial in enumerate(trials):
+        for number, trial in pending:
             trial_id = str(trial.get("id", number))
-            if trial_id in done:
-                continue
-            child_lineage = _lineage(values, dataset_id, feature_set_id, stage, model_family=str(trial.get("model_family", stage)))
+            child_lineage = _lineage(
+                values, dataset_id, feature_set_id, stage,
+                model_family=str(trial.get("model_family", stage)),
+                deployable=bool(trial.get("deployable", values.get("deployable", False))),
+            )
             child_id = tracker.start_run(child_lineage, nested=True, run_name=f"{stage}-trial-{trial_id}")
             failed_this_trial = False
             try:
-                outcome = str(trial.get("outcome", "finished"))
+                if state.remaining_wall_clock_seconds <= time.monotonic() - started:
+                    trial = {**trial, "outcome": "skipped", "skip_reason": "search wall-clock budget exhausted"}
+                evaluator = trial.get("evaluate")
+                evaluated = dict(evaluator()) if callable(evaluator) and trial.get("outcome", "finished") == "finished" else {}
+                record = {**trial, **evaluated}
+                outcome = str(record.get("outcome", "finished"))
                 if outcome == "failed":
-                    raise RuntimeError(str(trial.get("exception", "trial failed")))
-                tracker.log_params({"trial_id": trial_id, **dict(trial.get("params", {}))})
-                tracker.log_metrics(dict(trial.get("metrics", {})))
+                    raise RuntimeError(str(record.get("exception", "trial failed")))
+                tracker.log_params({"trial_id": trial_id, **dict(record.get("params", {}))})
+                tracker.log_metrics(dict(record.get("metrics", {})))
+                tracker.log_tags(dict(record.get("tags", {})))
+                artifacts = record.get("lineage_artifacts")
+                if artifacts:
+                    tracker.log_lineage_artifacts(**dict(artifacts))
+                timing = record.get("resource_timing")
+                if timing:
+                    tracker.log_resource_timing(dict(timing))
+                model = record.get("model")
+                if model is not None:
+                    tracker.log_model(model, artifact_path="model")
                 if outcome == "pruned":
                     tracker.end_run("KILLED", run_status="pruned")
+                elif outcome == "skipped":
+                    tracker.end_run(
+                        "FINISHED", run_status="skipped",
+                        extra_tags={"skip_reason": record.get("skip_reason", "trial skipped")},
+                    )
                 elif outcome == "finished":
                     tracker.end_run("FINISHED")
-                    score = trial.get("metrics", {}).get("aggregate_pr_auc")
-                    if score is not None and (stage not in state.best_run_ids or float(score) > float(values.get("_best_score", "-inf"))):
+                    score = record.get("metrics", {}).get("aggregate_pr_auc")
+                    if score is not None and float(score) > state.best_scores.get(stage, float("-inf")):
                         state.best_run_ids[stage] = child_id
-                        values["_best_score"] = float(score)
+                        state.best_scores[stage] = float(score)
                 else:
                     raise ValueError(f"unsupported trial outcome {outcome!r}")
             except Exception as exc:
@@ -161,13 +212,17 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
         state.save(state_path)
 
 
-def _lineage(values: Mapping[str, Any], dataset_id: str, feature_set_id: str, stage: str, *, model_family: str) -> dict[str, Any]:
+def _lineage(
+    values: Mapping[str, Any], dataset_id: str, feature_set_id: str, stage: str,
+    *, model_family: str, deployable: bool | None = None,
+) -> dict[str, Any]:
     return {
         "dataset_id": dataset_id, "feature_set_id": feature_set_id,
         "target_version": values.get("target_version", "vol_spike_v1"),
         "validation_version": values.get("validation_version", "walkforward_v1"),
         "git_sha": values.get("git_sha", "unknown"), "search_id": values["search_id"],
-        "model_family": model_family, "deployable": values.get("deployable", False),
+        "model_family": model_family,
+        "deployable": values.get("deployable", False) if deployable is None else deployable,
         "candidate_stage": stage,
     }
 
