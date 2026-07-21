@@ -1,0 +1,366 @@
+22:29:41 [hook] session-start: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:29:50 [hook] session-start: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:30:01 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:30:03 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:30:54 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:31:16 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:49 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:49 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:49 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:33:49 [extract] 13 exchanges (4 human)
+22:33:49 [haiku] calling (branch: main)
+22:33:52 [error] FAILED at line 175 (exit 1)
+22:33:52 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:52 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:52 [cooldown] 3s < 120s, skip
+22:33:56 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:56 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:56 [cooldown] 7s < 120s, skip
+22:33:58 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:58 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:33:58 [cooldown] 9s < 120s, skip
+22:34:00 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:00 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:00 [cooldown] 11s < 120s, skip
+22:34:02 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:02 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:02 [cooldown] 13s < 120s, skip
+22:34:02 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:02 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:02 [cooldown] 13s < 120s, skip
+22:34:03 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:03 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:04 [cooldown] 14s < 120s, skip
+22:34:05 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:05 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:05 [cooldown] 16s < 120s, skip
+22:34:06 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:06 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:06 [cooldown] 17s < 120s, skip
+22:34:07 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:07 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:07 [cooldown] 18s < 120s, skip
+22:34:10 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:10 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:10 [cooldown] 21s < 120s, skip
+22:34:11 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:11 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:11 [cooldown] 22s < 120s, skip
+22:34:12 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:12 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:12 [cooldown] 23s < 120s, skip
+22:34:12 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:12 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:13 [cooldown] 23s < 120s, skip
+22:34:13 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:13 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:13 [cooldown] 24s < 120s, skip
+22:34:15 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:15 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:15 [cooldown] 26s < 120s, skip
+22:34:16 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:16 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:16 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:16 [cooldown] 27s < 120s, skip
+22:34:17 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:17 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:17 [cooldown] 28s < 120s, skip
+22:34:19 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:19 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:19 [cooldown] 30s < 120s, skip
+22:34:20 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:20 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:20 [cooldown] 31s < 120s, skip
+22:34:21 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:21 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:21 [cooldown] 32s < 120s, skip
+22:34:21 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:21 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:21 [cooldown] 32s < 120s, skip
+22:34:22 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:22 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:22 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:22 [cooldown] 33s < 120s, skip
+22:34:23 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:23 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:23 [cooldown] 34s < 120s, skip
+22:34:28 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:28 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:28 [cooldown] 39s < 120s, skip
+22:34:29 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:30 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:30 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:30 [cooldown] 41s < 120s, skip
+22:34:30 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:30 [cooldown] 41s < 120s, skip
+22:34:31 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:31 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:31 [cooldown] 42s < 120s, skip
+22:34:33 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:33 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:33 [cooldown] 44s < 120s, skip
+22:34:34 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:34 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:34 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:34 [cooldown] 45s < 120s, skip
+22:34:35 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:36 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:36 [cooldown] 47s < 120s, skip
+22:34:36 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:36 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:36 [cooldown] 47s < 120s, skip
+22:34:40 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:41 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:41 [cooldown] 52s < 120s, skip
+22:34:42 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:42 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:42 [cooldown] 53s < 120s, skip
+22:34:43 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:44 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:44 [cooldown] 55s < 120s, skip
+22:34:46 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:46 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:46 [cooldown] 57s < 120s, skip
+22:34:46 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:46 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:46 [cooldown] 57s < 120s, skip
+22:34:49 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:49 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:50 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:50 [cooldown] 61s < 120s, skip
+22:34:50 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:50 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:50 [cooldown] 61s < 120s, skip
+22:34:51 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:51 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:51 [cooldown] 62s < 120s, skip
+22:34:51 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:51 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:51 [cooldown] 62s < 120s, skip
+22:34:56 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:56 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:56 [cooldown] 67s < 120s, skip
+22:34:57 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:57 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:57 [cooldown] 68s < 120s, skip
+22:34:57 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:58 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:34:58 [cooldown] 69s < 120s, skip
+22:35:00 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:00 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:00 [cooldown] 71s < 120s, skip
+22:35:11 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:12 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:12 [cooldown] 83s < 120s, skip
+22:35:18 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:18 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:18 [cooldown] 89s < 120s, skip
+22:35:19 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:19 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:19 [cooldown] 90s < 120s, skip
+22:35:20 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:20 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:20 [cooldown] 91s < 120s, skip
+22:35:31 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:31 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:31 [cooldown] 102s < 120s, skip
+22:35:35 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:35 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:35 [cooldown] 106s < 120s, skip
+22:35:40 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:40 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:40 [cooldown] 111s < 120s, skip
+22:35:42 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:42 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:42 [cooldown] 113s < 120s, skip
+22:35:51 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:51 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:51 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:35:51 [extract] 33 exchanges (4 human)
+22:35:51 [haiku] calling (branch: main)
+22:35:53 [error] FAILED at line 175 (exit 1)
+22:35:55 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:55 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:35:56 [cooldown] 5s < 120s, skip
+22:36:03 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:36:03 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:36:03 [cooldown] 12s < 120s, skip
+22:36:56 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:36:57 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:36:57 [cooldown] 66s < 120s, skip
+22:37:19 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:37:20 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:37:20 [cooldown] 89s < 120s, skip
+22:37:33 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:37:33 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:37:33 [cooldown] 102s < 120s, skip
+22:39:35 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:35 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:35 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:39:35 [extract] 39 exchanges (4 human)
+22:39:36 [haiku] calling (branch: main)
+22:39:37 [error] FAILED at line 175 (exit 1)
+22:39:45 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:45 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:45 [cooldown] 10s < 120s, skip
+22:39:45 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:45 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:45 [cooldown] 10s < 120s, skip
+22:39:45 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:46 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:46 [cooldown] 11s < 120s, skip
+22:39:54 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:54 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:54 [cooldown] 19s < 120s, skip
+22:39:55 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:55 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:55 [cooldown] 20s < 120s, skip
+22:39:55 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:55 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:56 [cooldown] 20s < 120s, skip
+22:39:56 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:56 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:57 [cooldown] 21s < 120s, skip
+22:39:57 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:57 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:39:57 [cooldown] 22s < 120s, skip
+22:40:07 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:08 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:08 [cooldown] 33s < 120s, skip
+22:40:14 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:14 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:14 [cooldown] 39s < 120s, skip
+22:40:29 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:30 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:30 [cooldown] 55s < 120s, skip
+22:40:34 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:34 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:34 [cooldown] 59s < 120s, skip
+22:40:37 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:37 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:37 [cooldown] 62s < 120s, skip
+22:40:42 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:42 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:42 [cooldown] 67s < 120s, skip
+22:40:47 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:47 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:40:47 [cooldown] 72s < 120s, skip
+22:41:00 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:00 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:00 [cooldown] 85s < 120s, skip
+22:41:05 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:05 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:05 [cooldown] 90s < 120s, skip
+22:41:10 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:10 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:10 [cooldown] 95s < 120s, skip
+22:41:12 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:12 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:12 [cooldown] 97s < 120s, skip
+22:41:13 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:13 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:13 [cooldown] 98s < 120s, skip
+22:41:15 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:15 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:15 [cooldown] 100s < 120s, skip
+22:41:21 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:21 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:21 [cooldown] 106s < 120s, skip
+22:41:23 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:23 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:23 [cooldown] 108s < 120s, skip
+22:41:25 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:25 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:25 [cooldown] 110s < 120s, skip
+22:41:27 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:28 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:28 [cooldown] 113s < 120s, skip
+22:41:33 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:33 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:33 [cooldown] 118s < 120s, skip
+22:41:35 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:36 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:36 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:41:36 [extract] 71 exchanges (4 human)
+22:41:36 [haiku] calling (branch: main)
+22:41:37 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:37 [error] FAILED at line 175 (exit 1)
+22:41:52 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:52 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:41:52 [cooldown] 16s < 120s, skip
+22:42:09 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:09 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:09 [cooldown] 33s < 120s, skip
+22:42:18 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:18 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:18 [cooldown] 42s < 120s, skip
+22:42:23 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:23 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:23 [cooldown] 47s < 120s, skip
+22:42:28 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:28 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:28 [cooldown] 52s < 120s, skip
+22:42:36 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:36 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:42:36 [cooldown] 60s < 120s, skip
+22:43:30 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:43:31 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:43:31 [cooldown] 115s < 120s, skip
+22:44:53 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:44:53 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:44:53 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:44:53 [extract] 92 exchanges (7 human)
+22:44:53 [haiku] calling (branch: main)
+22:44:55 [error] FAILED at line 175 (exit 1)
+22:44:58 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:44:58 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:44:58 [cooldown] 5s < 120s, skip
+22:46:32 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:46:32 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:46:33 [cooldown] 100s < 120s, skip
+22:51:48 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:51:48 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:51:48 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:51:48 [extract] 100 exchanges (9 human)
+22:51:48 [haiku] calling (branch: main)
+22:51:50 [error] FAILED at line 175 (exit 1)
+22:52:25 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:52:25 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:52:25 [cooldown] 37s < 120s, skip
+22:52:47 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:52:47 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:52:47 [cooldown] 59s < 120s, skip
+22:54:10 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:10 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:10 [extract] session ee2197d9-9c72-464e-86e6-af0ab4b0e147
+22:54:11 [extract] 106 exchanges (10 human)
+22:54:11 [haiku] calling (branch: main)
+22:54:12 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:13 [error] FAILED at line 175 (exit 1)
+22:54:43 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:44 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:44 [cooldown] 33s < 120s, skip
+22:54:49 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:49 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:49 [cooldown] 38s < 120s, skip
+22:54:49 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:50 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:50 [cooldown] 39s < 120s, skip
+22:54:50 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:50 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:50 [cooldown] 39s < 120s, skip
+22:54:54 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:54 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:54 [cooldown] 43s < 120s, skip
+22:54:55 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:55 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:55 [cooldown] 44s < 120s, skip
+22:54:55 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:55 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:54:55 [cooldown] 44s < 120s, skip
+22:55:02 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:55:02 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:55:02 [cooldown] 51s < 120s, skip
+22:55:46 [hook] post-tool: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:55:46 [hook] save-session: PROJECT_DIR=/Users/ricopichardo/Claude/BTCSpiker PIPELINE_DIR=/Users/ricopichardo/.claude/plugins/cache/claude-plugins-official/remember/0.7.3 PYTHON=python3 REMEMBER_DIR=/Users/ricopichardo/Claude/BTCSpiker/.remember
+22:55:46 [cooldown] 95s < 120s, skip
