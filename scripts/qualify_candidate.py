@@ -17,8 +17,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import mlflow
 from mlflow.tracking import MlflowClient
 
-from btcspiker_ml.qualification import CandidateEvidence, qualify
-from btcspiker_ml.search import SearchState
+from btcspiker_ml.qualification import qualify_recorded_candidate
 
 
 CANDIDATE_MODEL_NAME = "btc-volatility-candidate"
@@ -27,7 +26,6 @@ CANDIDATE_MODEL_NAME = "btc-volatility-candidate"
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_id")
-    parser.add_argument("evidence_json", type=Path)
     parser.add_argument("--search-state", type=Path, required=True)
     parser.add_argument("--tracking-uri", required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
@@ -50,24 +48,22 @@ def main() -> int:
     args = _arguments()
     mlflow.set_tracking_uri(args.tracking_uri)
     client = MlflowClient(args.tracking_uri)
-    # Require a real completed candidate, never invent a registry source.
-    run = client.get_run(args.run_id)
-    if run.info.status != "FINISHED":
-        raise ValueError(f"run {args.run_id} is not completed")
-
-    evidence = CandidateEvidence(**json.loads(args.evidence_json.read_text()))
-    state = SearchState.load(args.search_state)
-    # Task 9 persists this timestamp and refuses any reopened search id. Save
-    # immediately after opening, before the gate decision or registry action.
-    state.open_final_holdout(requesting_stage="qualification")
-    state.save(args.search_state)
-    result = qualify(evidence)
+    qualification = qualify_recorded_candidate(
+        client=client,
+        run_id=args.run_id,
+        state_path=args.search_state,
+        artifact_root=args.artifact_root,
+    )
+    evidence = qualification.evidence
+    result = qualification.result
     payload: dict[str, object] = {
         "run_id": args.run_id,
+        "baseline_run_id": qualification.baseline_run_id,
+        "dataset_manifest": str(qualification.dataset_manifest_path),
         "evidence": asdict(evidence),
         "passed": result.passed,
         "reasons": list(result.reasons),
-        "final_holdout_accessed_at": state.final_holdout_accessed_at,
+        "final_holdout_accessed_at": qualification.final_holdout_accessed_at,
     }
     qualification_path = _write_qualification_artifact(
         args.artifact_root, args.run_id, payload
