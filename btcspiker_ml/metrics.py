@@ -118,6 +118,7 @@ def paired_block_bootstrap(y_true: Sequence[int], candidate_scores: Sequence[flo
     rng = np.random.default_rng(seed)
     deltas = []
     for _ in range(resamples):
-        indices = np.concatenate(rng.choice(blocks, size=len(blocks), replace=True))
+        sampled_block_indices = rng.integers(0, len(blocks), size=len(blocks))
+        indices = np.concatenate([blocks[index] for index in sampled_block_indices])
         deltas.append(average_precision_score(target[indices], candidate[indices]) - average_precision_score(target[indices], baseline[indices]))
     return ConfidenceInterval(float(np.percentile(deltas, 2.5)), float(np.mean(deltas)), float(np.percentile(deltas, 97.5)))

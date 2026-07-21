@@ -41,3 +41,19 @@ def test_paired_block_bootstrap_is_deterministic_and_reports_improvement():
     assert first == second
     assert first.lower > 0
     assert first.lower <= first.estimate <= first.upper
+
+
+def test_paired_block_bootstrap_resamples_uneven_utc_blocks():
+    timestamps = pd.to_datetime([
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:10:00Z",
+        "2026-01-01T00:20:00Z",
+        "2026-01-01T00:30:00Z",
+    ])
+    y = np.array([0, 1, 0, 1])
+    candidate = np.array([0.1, 0.9, 0.2, 0.8])
+    baseline = np.array([0.8, 0.3, 0.7, 0.4])
+
+    result = paired_block_bootstrap(y, candidate, baseline, timestamps, 30, 20, 42)
+
+    assert result.lower <= result.estimate <= result.upper

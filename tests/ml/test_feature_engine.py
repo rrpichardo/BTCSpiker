@@ -1,6 +1,23 @@
 import pandas as pd
+import pytest
 
 from btcspiker_ml.features import FEATURE_SETS, FeatureEngine, materialize_features
+
+
+def test_microstructure_v1_materializes_the_frozen_level2_schema(raw_ticks):
+    level2_ticks = [
+        {**tick, "bid_size": "2.0", "ask_size": "1.0"}
+        for tick in raw_ticks
+    ]
+
+    materialized = materialize_features(pd.DataFrame(level2_ticks), "microstructure_v1")
+
+    assert set(FEATURE_SETS["microstructure_v1"].columns).issubset(materialized.columns)
+
+
+def test_microstructure_v1_reports_missing_level2_inputs(raw_ticks):
+    with pytest.raises(ValueError, match=r"missing raw columns: \['ask_size', 'bid_size'\]"):
+        materialize_features(pd.DataFrame(raw_ticks), "microstructure_v1")
 
 
 def test_batch_and_stream_features_match(raw_ticks):

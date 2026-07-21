@@ -12,6 +12,7 @@ import pandas as pd
 from features.feature_funcs import (
     compute_future_vol,
     compute_midprice,
+    compute_ob_imbalance,
     compute_return,
     compute_rolling_stats,
     compute_spread,
@@ -54,7 +55,13 @@ FEATURE_SETS = {
     ),
     "microstructure_v1": FeatureSet(
         "microstructure_v1",
-        ("log_return", "spread_bps", "book_imbalance", "ewma_vol_fast", "ewma_vol_slow"),
+        (
+            "log_return", "spread_bps",
+            *(column for window in (5, 15, 30, 60, 120, 300) for column in (f"return_{window}s", f"vol_{window}s")),
+            "book_imbalance", "book_imbalance_mean_5s", "book_imbalance_mean_15s", "book_imbalance_mean_60s",
+            "spread_change_5s", "spread_change_60s", "intensity_change_15s", "intensity_change_60s",
+            "ewma_vol_fast", "ewma_vol_slow", "vol_of_vol_60s", "momentum_15s", "momentum_60s", "acceleration_60s",
+        ),
         (5, 15, 30, 60, 120, 300), 300, "3", True,
         ("coinbase_ticker", "coinbase_level2"),
     ),
@@ -64,7 +71,7 @@ _BASE_RAW_COLUMNS = {"product_id", "timestamp", "price", "best_bid", "best_ask"}
 _RAW_COLUMNS_BY_SET = {
     "core_v1": _BASE_RAW_COLUMNS,
     "multi_window_v1": _BASE_RAW_COLUMNS,
-    "microstructure_v1": _BASE_RAW_COLUMNS | {"book_imbalance"},
+    "microstructure_v1": _BASE_RAW_COLUMNS | {"bid_size", "ask_size"},
 }
 
 
@@ -86,6 +93,7 @@ class FeatureEngine:
         self.buffer_max_age = max(600.0, self.feature_set.max_lookback_seconds + horizon_seconds)
         self.price_buffer: deque[dict[str, float]] = deque()
         self.spread_buffer: deque[dict[str, float]] = deque()
+        self.imbalance_buffer: deque[dict[str, float]] = deque()
         self.timestamp_buffer: deque[float] = deque()
         self.pending: deque[dict[str, object]] = deque()
 
@@ -104,6 +112,11 @@ class FeatureEngine:
 
         self.price_buffer.append({"price": price, "ts": timestamp})
         self.spread_buffer.append({"spread_abs": spread["spread_abs"], "spread_bps": spread["spread_bps"], "ts": timestamp})
+        if self.feature_set.feature_set_id == "microstructure_v1":
+            self.imbalance_buffer.append({
+                "imbalance": compute_ob_imbalance(float(tick["bid_size"]), float(tick["ask_size"])),
+                "ts": timestamp,
+            })
         self.timestamp_buffer.append(timestamp)
         self._prune(timestamp)
 
@@ -136,9 +149,7 @@ class FeatureEngine:
         elif self.feature_set.feature_set_id == "multi_window_v1":
             row.update(self._multi_window_features(price, timestamp))
         else:
-            raise ValueError(
-                "microstructure_v1 requires Level 2 book features and cannot be materialized from ticker ticks"
-            )
+            row.update(self._microstructure_features(price, timestamp))
         return row
 
     def _core_features(self) -> dict[str, float | int]:
@@ -175,6 +186,45 @@ class FeatureEngine:
             })
         return result
 
+    def _microstructure_features(self, price: float, timestamp: float) -> dict[str, float]:
+        result: dict[str, float] = {}
+        returns_by_window: dict[int, float] = {}
+        for window in self.feature_set.windows_seconds:
+            price_window = [entry for entry in self.price_buffer if entry["ts"] >= timestamp - window]
+            rolling = compute_rolling_stats(self.price_buffer, window)
+            window_return = compute_return(price, price_window[0]["price"])
+            result[f"return_{window}s"] = window_return
+            result[f"vol_{window}s"] = rolling["vol"]
+            returns_by_window[window] = window_return
+
+        for window in (5, 15, 60):
+            imbalance_window = [entry["imbalance"] for entry in self.imbalance_buffer if entry["ts"] >= timestamp - window]
+            result[f"book_imbalance_mean_{window}s"] = sum(imbalance_window) / len(imbalance_window) if imbalance_window else 0.0
+
+        for window in (5, 60):
+            spread_window = [entry["spread_bps"] for entry in self.spread_buffer if entry["ts"] >= timestamp - window]
+            result[f"spread_change_{window}s"] = spread_window[-1] - spread_window[0] if len(spread_window) > 1 else 0.0
+        for window in (15, 60):
+            current_intensity = compute_trade_intensity(self.timestamp_buffer, window)
+            prior_start = timestamp - 2 * window
+            prior_intensity = sum(prior_start <= entry < timestamp - window for entry in self.timestamp_buffer) / window
+            result[f"intensity_change_{window}s"] = current_intensity - prior_intensity
+
+        returns = [compute_return(entry["price"], self.price_buffer[index - 1]["price"])
+                   for index, entry in enumerate(self.price_buffer) if index]
+        result["book_imbalance"] = self.imbalance_buffer[-1]["imbalance"]
+        result["ewma_vol_fast"] = _ewma_abs(returns, 0.3)
+        result["ewma_vol_slow"] = _ewma_abs(returns, 0.1)
+        recent_returns = [compute_return(entry["price"], self.price_buffer[index - 1]["price"])
+                          for index, entry in enumerate(self.price_buffer)
+                          if index and entry["ts"] >= timestamp - 60]
+        result["vol_of_vol_60s"] = _population_std(recent_returns)
+        result["momentum_15s"] = returns_by_window[15]
+        result["momentum_60s"] = returns_by_window[60]
+        prior_price = next((entry["price"] for entry in self.price_buffer if entry["ts"] >= timestamp - 120), price)
+        result["acceleration_60s"] = returns_by_window[60] - compute_return(prior_price, next((entry["price"] for entry in self.price_buffer if entry["ts"] >= timestamp - 180), prior_price))
+        return result
+
     def _drain(self, timestamp: float, force: bool = False) -> list[dict]:
         emitted: list[dict] = []
         while self.pending:
@@ -199,13 +249,14 @@ class FeatureEngine:
 
     def _prune(self, timestamp: float) -> None:
         cutoff = timestamp - self.buffer_max_age
-        for buffer in (self.price_buffer, self.spread_buffer, self.timestamp_buffer):
+        for buffer in (self.price_buffer, self.spread_buffer, self.imbalance_buffer, self.timestamp_buffer):
             while buffer and (buffer[0]["ts"] if isinstance(buffer[0], dict) else buffer[0]) < cutoff:
                 buffer.popleft()
 
     def _reset(self) -> None:
         self.price_buffer.clear()
         self.spread_buffer.clear()
+        self.imbalance_buffer.clear()
         self.timestamp_buffer.clear()
         self.pending.clear()
 
@@ -238,3 +289,10 @@ def _population_std(values: Iterable[float]) -> float:
         return 0.0
     mean = sum(values) / len(values)
     return (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+
+
+def _ewma_abs(values: Iterable[float], alpha: float) -> float:
+    result = 0.0
+    for value in values:
+        result = alpha * abs(value) + (1.0 - alpha) * result
+    return result

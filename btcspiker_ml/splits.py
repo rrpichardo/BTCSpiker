@@ -36,6 +36,8 @@ def make_temporal_splits(
     n_rows = len(ts)
     if n_rows == 0:
         raise ValueError("timestamps cannot be empty")
+    if targets is None:
+        raise ValueError("targets are required to validate development folds")
     if event_keys is not None and len(event_keys) != n_rows:
         raise ValueError("event_keys must have one value per timestamp")
     if ts.has_duplicates and event_keys is None:
@@ -57,14 +59,18 @@ def make_temporal_splits(
     ordered_ts = ts[order]
     development_end = n_rows - int(np.ceil(n_rows * final_holdout_fraction))
     embargo = pd.Timedelta(seconds=embargo_seconds)
-    first_validation_start = int(np.searchsorted(ordered_ts.asi8, (ordered_ts[0] + embargo).value, side="left"))
+    # Reserve one embargo interval for the initial expanding training window
+    # and one before its first validation window.  Otherwise the first fold
+    # can have only the first row in training, making the class check
+    # impossible to satisfy for a binary classifier.
+    first_validation_start = int(np.searchsorted(ordered_ts.asi8, (ordered_ts[0] + 2 * embargo).value, side="left"))
     available_validation_rows = development_end - first_validation_start
     chunk = available_validation_rows // folds
     if first_validation_start == 0 or chunk == 0:
         raise ValueError("not enough development rows for requested folds")
 
-    ordered_targets = None if targets is None else np.asarray(targets)[order]
-    if ordered_targets is not None and len(ordered_targets) != n_rows:
+    ordered_targets = np.asarray(targets)[order]
+    if len(ordered_targets) != n_rows:
         raise ValueError("targets must have one value per timestamp")
     result: list[TemporalFold] = []
     for fold_number in range(folds):
@@ -75,9 +81,8 @@ def make_temporal_splits(
         validation_positions = np.arange(validation_start, validation_end)
         if not len(train_positions) or not len(validation_positions):
             raise ValueError("fold has no training or validation rows after embargo")
-        if ordered_targets is not None:
-            if len(np.unique(ordered_targets[train_positions])) < 2 or len(np.unique(ordered_targets[validation_positions])) < 2:
-                raise ValueError("each fold must contain both target classes")
+        if len(np.unique(ordered_targets[train_positions])) < 2 or len(np.unique(ordered_targets[validation_positions])) < 2:
+            raise ValueError("each fold must contain both target classes")
         result.append(TemporalFold(train=order[train_positions].tolist(), validation=order[validation_positions].tolist()))
 
     return SplitPlan(folds=tuple(result), final_holdout=order[development_end:].tolist())
