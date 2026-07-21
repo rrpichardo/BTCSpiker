@@ -25,6 +25,9 @@ def test_batch_and_stream_features_match(raw_ticks):
     engine = FeatureEngine("core_v1", horizon_seconds=60, threshold=0.000048)
     streamed = [row for tick in raw_ticks for row in engine.ingest(tick)]
 
+    # A non-empty assertion prevents an empty-vs-empty parity pass when the
+    # fixture does not span the delayed 60-second label horizon.
+    assert streamed
     pd.testing.assert_frame_equal(
         batch.reset_index(drop=True),
         pd.DataFrame(streamed).reset_index(drop=True),
