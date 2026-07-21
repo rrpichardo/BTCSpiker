@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 import requests
 
+from scripts.feature_to_predict_bridge import _build_row
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HOST = "127.0.0.1"
 MODEL_PATH = PROJECT_ROOT / "handoff" / "models" / "artifacts" / "lr_pipeline.pkl"
@@ -171,6 +173,28 @@ def test_predict_rejects_registered_feature_version_mismatch(base_url):
     response = requests.post(f"{base_url}/predict", json=payload, timeout=5)
     assert response.status_code == 422
     assert "feature_schema_version" in response.text
+
+
+def test_bridge_row_preserves_registered_versions_through_api_validation(base_url):
+    """The real bridge row must retain the API's registered feature contract."""
+    feature_message = {
+        **SAMPLE_ROW,
+        "timestamp": "2026-07-21T12:00:00Z",
+        "feature_set_id": "core_v1",
+        "feature_schema_version": "1",
+    }
+
+    bridge_row = _build_row(feature_message, kafka_timestamp_ms=None)
+
+    assert bridge_row["feature_set_id"] == "core_v1"
+    assert bridge_row["feature_schema_version"] == "1"
+    accepted = requests.post(f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5)
+    assert accepted.status_code == 200
+
+    bridge_row["feature_schema_version"] = "altered"
+    rejected = requests.post(f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5)
+    assert rejected.status_code == 422
+    assert "feature_schema_version" in rejected.text
 
 
 @pytest.mark.parametrize("value", [True, "not-a-number", float("nan"), float("inf")])
