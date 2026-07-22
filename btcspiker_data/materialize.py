@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
+import hashlib
+import os
+from pathlib import Path
+import tempfile
 
 import pandas as pd
 
@@ -66,17 +70,67 @@ def materialize_segmented_features(
     outputs: dict[str, pd.DataFrame] = {}
     for feature_set_id in _FEATURE_SET_IDS:
         pieces = []
-        for _, segment in ticks.groupby("segment_id", sort=True):
+        for (_, segment_id), segment in ticks.groupby(
+            ["product_id", "segment_id"], sort=True
+        ):
             features = materialize_features(segment, feature_set_id)
             if not features.empty:
-                features["segment_id"] = segment["segment_id"].iloc[0]
+                features["segment_id"] = segment_id
                 pieces.append(features)
         outputs[feature_set_id] = (
-            pd.concat(pieces, ignore_index=True).sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+            pd.concat(pieces, ignore_index=True)
+            .sort_values(
+                ["timestamp", "product_id", "segment_id"], kind="mergesort"
+            )
+            .reset_index(drop=True)
             if pieces
             else pd.DataFrame()
         )
     return outputs
+
+
+def write_feature_outputs_atomic(
+    outputs: Mapping[str, pd.DataFrame], root: str | os.PathLike[str]
+) -> dict[str, Path]:
+    """Persist the three feature tables as immutable content-addressed Parquet."""
+    provided = set(outputs)
+    required = set(_FEATURE_SET_IDS)
+    if provided != required:
+        raise ValueError(
+            f"feature outputs must contain exactly {sorted(required)}; got {sorted(provided)}"
+        )
+
+    paths: dict[str, Path] = {}
+    root_path = Path(root)
+    for feature_set_id in _FEATURE_SET_IDS:
+        destination_dir = (
+            root_path / "features" / f"feature_set={feature_set_id}"
+        )
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temp_name = tempfile.mkstemp(
+            prefix=".part-", suffix=".parquet.tmp", dir=destination_dir
+        )
+        os.close(file_descriptor)
+        temp_path = Path(temp_name)
+        try:
+            outputs[feature_set_id].to_parquet(temp_path, index=False)
+            _fsync_file(temp_path)
+            digest = _sha256(temp_path)
+            destination = destination_dir / f"part-{digest}.parquet"
+            if destination.exists():
+                if _sha256(destination) != digest:
+                    raise ValueError(
+                        f"content digest mismatch for existing feature output: {destination}"
+                    )
+                temp_path.unlink()
+            else:
+                os.replace(temp_path, destination)
+                _fsync_directory(destination_dir)
+            paths[feature_set_id] = destination
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+    return paths
 
 
 def _to_frame(rows: pd.DataFrame | Iterable[object]) -> pd.DataFrame:
@@ -89,3 +143,24 @@ def _require_columns(frame: pd.DataFrame, required: set[str], description: str) 
     missing = sorted(required - set(frame.columns))
     if missing:
         raise ValueError(f"{description} missing required columns: {missing}")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file_handle:
+        for block in iter(lambda: file_handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as file_handle:
+        os.fsync(file_handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    file_descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(file_descriptor)
+    finally:
+        os.close(file_descriptor)
