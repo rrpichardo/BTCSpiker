@@ -1,4 +1,4 @@
-search_id: "rehearsal-2026-07-21"
+search_id: "rehearsal-2026-07-22"
 storage:
   existing_data: "data/processed/features.rehearsal.parquet"
   artifact_root: ".artifacts/btcspiker/rehearsal"

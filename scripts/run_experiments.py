@@ -15,12 +15,13 @@ import numpy as np
 import pandas as pd
 import psutil
 import yaml
-from sklearn.calibration import calibration_curve
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import VotingClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import brier_score_loss, precision_recall_curve
 from sklearn.pipeline import Pipeline
+from sklearn.utils.validation import _num_samples
 
 try:
     import optuna
@@ -39,6 +40,19 @@ from btcspiker_ml.splits import make_temporal_splits
 
 
 _OPTIONAL_MODULES = {"lightgbm": "lightgbm", "xgboost": "xgboost", "catboost": "catboost"}
+
+# Platt scaling over a chronological tail of each training window.  Two
+# parameters cannot overfit a small calibration slice the way isotonic can.
+CALIBRATION_METHOD = "sigmoid"
+CALIBRATION_FRACTION = 0.25
+# Qualification fails a candidate whose Brier score regresses more than 5%
+# against the prevalence baseline; development selection applies the same bar
+# so the tournament cannot crown a candidate that is already disqualified.
+MAX_DEVELOPMENT_BRIER_RATIO = 1.05
+# Qualification also requires at least four folds beaten.  Selecting on the mean
+# fold score alone let one lucky fold carry an otherwise unbeaten-by-prevalence
+# candidate to a stage win.
+MIN_DEVELOPMENT_FOLDS_WON = 4
 
 
 def build_stage_trials(config: ExperimentConfig, raw: dict[str, Any], stage: str) -> list[dict[str, Any]]:
@@ -161,6 +175,31 @@ def _bind_evaluator(
     return evaluate
 
 
+class _TemporalCalibrationSplit:
+    """One chronological fit/calibration split for probability calibration.
+
+    Rows reach the estimator in ascending event-time order, so a plain
+    ``StratifiedKFold`` would calibrate on rows that precede its own training
+    window.  This yields a single split that always trains on the earlier rows
+    and calibrates on the later ones.
+    """
+
+    def __init__(self, calibration_fraction: float):
+        if not 0.0 < calibration_fraction < 1.0:
+            raise ValueError("calibration_fraction must be between 0 and 1")
+        self._fraction = calibration_fraction
+
+    def split(self, X, y=None, groups=None):
+        rows = _num_samples(X)
+        cut = rows - int(np.ceil(rows * self._fraction))
+        if cut < 1:
+            raise ValueError("not enough rows to hold out a calibration window")
+        yield np.arange(cut), np.arange(cut, rows)
+
+    def get_n_splits(self, X=None, y=None, groups=None) -> int:
+        return 1
+
+
 def _candidate_model(spec: dict[str, Any], config: ExperimentConfig):
     family = str(spec["model_family"])
     params = dict(spec.get("params", {}))
@@ -169,19 +208,36 @@ def _candidate_model(spec: dict[str, Any], config: ExperimentConfig):
     # second, unbounded pool of worker processes.
     n_jobs = 1
     if family == "development_prevalence":
+        # The prevalence reference must stay raw; it is what calibration is scored against.
         estimator = DummyClassifier(strategy="prior")
     elif family == "logistic_hist_gradient_soft_voting":
         weight = float(params["tree_weight"])
-        estimator = VotingClassifier(
+        estimator = _calibrated(VotingClassifier(
             estimators=[
                 ("linear", build_model("logistic", {}, config.validation.random_seed, 1)),
                 ("tree", build_model("hist_gradient_boosting", {}, config.validation.random_seed, 1)),
             ],
             voting="soft", weights=[1.0 - weight, weight], n_jobs=n_jobs,
-        )
+        ))
     else:
-        estimator = build_model(family, params, config.validation.random_seed, n_jobs)
+        estimator = _calibrated(build_model(family, params, config.validation.random_seed, n_jobs))
     return Pipeline([("impute", SimpleImputer(strategy="median")), ("model", estimator)])
+
+
+def _calibrated(estimator):
+    """Fit a chronological probability calibrator around a candidate estimator.
+
+    Ranking quality alone does not survive qualification: an uncalibrated
+    candidate is scored on Brier against the prevalence baseline, and a
+    confident-but-drifting model loses that comparison badly.
+    """
+    return CalibratedClassifierCV(
+        estimator, method=CALIBRATION_METHOD,
+        cv=_TemporalCalibrationSplit(CALIBRATION_FRACTION), ensemble=True,
+        # Trial-level scheduling owns the parallelism; the calibrator must not
+        # open a second pool on top of the concurrent trials.
+        n_jobs=1,
+    )
 
 
 def _evaluate_development_trial(
@@ -211,6 +267,9 @@ def _evaluate_development_trial(
     source = frame.loc[:, columns].replace([np.inf, -np.inf], np.nan)
     fold_metrics: dict[str, float] = {}
     scores: list[float] = []
+    folds_won = 0
+    candidate_brier_total = 0.0
+    baseline_brier_total = 0.0
     fit_seconds = 0.0
     inference_seconds = 0.0
     per_row_latency_ms: list[float] = []
@@ -235,6 +294,16 @@ def _evaluate_development_trial(
         metric = evaluate_predictions(target[validation], prediction, timestamps.iloc[validation], threshold=0.5)
         fold_metrics[f"fold_{fold_number}_pr_auc"] = metric.pr_auc
         scores.append(metric.pr_auc)
+        # A prevalence-constant predictor scores PR-AUC == prevalence, so this
+        # counts the folds that actually beat the baseline qualification uses.
+        folds_won += int(metric.pr_auc > metric.prevalence)
+        # The baseline refits per fold and predicts that fold's training
+        # prevalence, so the comparison has to move with it.  Scoring against a
+        # single pooled constant instead measures prevalence drift, which
+        # penalises every model equally — including the baseline itself.
+        fold_baseline = np.full(len(validation), float(target[train].mean()))
+        candidate_brier_total += brier_score_loss(target[validation], prediction) * len(validation)
+        baseline_brier_total += brier_score_loss(target[validation], fold_baseline) * len(validation)
         oof_parts.append(pd.DataFrame({
             "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
             "target": target[validation], "prediction": prediction, "fold": fold_number,
@@ -247,6 +316,9 @@ def _evaluate_development_trial(
 
     oof = pd.concat(oof_parts, ignore_index=True).sort_values("row_index")
     tau = _best_threshold(oof["target"].to_numpy(), oof["prediction"].to_numpy())
+    if baseline_brier_total <= 0.0:
+        raise ValueError("prevalence baseline has no Brier score to compare against")
+    development_brier_ratio = float(candidate_brier_total / baseline_brier_total)
     fitted = _candidate_model(spec, config)
     development = np.asarray(sorted(development_rows), dtype=int)
     before_refit = time.perf_counter()
@@ -275,6 +347,8 @@ def _evaluate_development_trial(
         "tags": {"feature_parity_passed": parity_passed},
         "metrics": {
             "aggregate_pr_auc": float(np.mean(scores)), "p95_latency_ms": p95_latency_ms,
+            "development_brier_ratio": development_brier_ratio,
+            "development_folds_won": float(folds_won),
             **fold_metrics,
         },
         "model": fitted,
@@ -340,6 +414,8 @@ def main() -> int:
         "deployable": False, "max_hours": config.search.max_hours,
         "max_parallel_jobs": config.search.max_parallel_jobs,
         "trials": build_stage_trials(config, raw, args.stage), "labelled_rows": int(frame.shape[0]),
+        "max_development_brier_ratio": MAX_DEVELOPMENT_BRIER_RATIO,
+        "min_development_folds_won": MIN_DEVELOPMENT_FOLDS_WON,
         "development_fold_positive_events": raw.get("development_fold_positive_events", []),
         "resume": args.resume,
     }

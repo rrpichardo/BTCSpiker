@@ -187,3 +187,130 @@ def test_neural_stage_requires_measured_boosted_tree_plateau(tmp_path: Path):
 
     assert result.status == "skipped"
     assert "boosted-tree plateau" in result.skipped_reason
+
+
+def test_miscalibrated_trial_does_not_win_despite_a_higher_ranking_score(
+    tmp_path: Path,
+):
+    config = _config(tmp_path)
+    config.update(
+        max_development_brier_ratio=1.05,
+        trials=[
+            {
+                "id": "calibrated",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.20,
+                    "development_brier_ratio": 0.98,
+                },
+            },
+            {
+                "id": "miscalibrated",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.40,
+                    "development_brier_ratio": 1.83,
+                },
+            },
+        ],
+    )
+
+    run_stage(config, "d1", "core_v1", "linear")
+    state = SearchState.load(tmp_path / "state" / "search-1.json")
+
+    # The miscalibrated trial ranks higher (0.40) but is disqualified, so the
+    # calibrated trial holds the stage win.
+    assert state.best_scores["linear"] == pytest.approx(0.20)
+    assert state.stage_score_history["linear"] == [0.20, 0.40]
+
+
+def test_one_lucky_fold_cannot_win_a_stage_for_an_inconsistent_trial(tmp_path: Path):
+    config = _config(tmp_path)
+    config.update(
+        min_development_folds_won=4,
+        trials=[
+            {
+                "id": "consistent",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.20,
+                    "development_folds_won": 5,
+                },
+            },
+            {
+                "id": "one-lucky-fold",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.40,
+                    "development_folds_won": 1,
+                },
+            },
+        ],
+    )
+
+    run_stage(config, "d1", "core_v1", "linear")
+    state = SearchState.load(tmp_path / "state" / "search-1.json")
+
+    assert state.best_scores["linear"] == pytest.approx(0.20)
+
+
+def test_stage_completes_and_records_no_winner_when_no_trial_clears_the_bar(
+    tmp_path: Path,
+):
+    config = _config(tmp_path)
+    config.update(
+        min_development_folds_won=4,
+        trials=[
+            {
+                "id": "inconsistent",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.40,
+                    "development_folds_won": 1,
+                },
+            },
+        ],
+    )
+
+    result = run_stage(config, "d1", "core_v1", "linear")
+    state = SearchState.load(tmp_path / "state" / "search-1.json")
+
+    assert result.status == "completed"
+    assert "linear" in state.completed_stages
+    assert "linear" not in state.best_run_ids
+
+
+def test_baseline_stage_records_its_reference_winner_despite_candidate_bars(
+    tmp_path: Path,
+):
+    """The baseline scores exactly prevalence, so it can never beat prevalence.
+
+    Gating it like a candidate leaves qualification with no reference at all.
+    """
+    config = _config(tmp_path)
+    config.update(
+        min_development_folds_won=4,
+        max_development_brier_ratio=1.05,
+        trials=[
+            {
+                "id": "prevalence",
+                "model_family": "development_prevalence",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.08,
+                    "development_folds_won": 0,
+                    "development_brier_ratio": 1.0,
+                },
+            },
+        ],
+    )
+
+    run_stage(config, "d1", "core_v1", "baseline")
+    state = SearchState.load(tmp_path / "state" / "search-1.json")
+
+    assert state.best_run_ids["baseline"]

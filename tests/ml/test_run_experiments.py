@@ -4,26 +4,38 @@ from types import SimpleNamespace
 
 import mlflow
 import numpy as np
+import pytest
 import pandas as pd
 import yaml
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import brier_score_loss
 
 from btcspiker_ml.config import load_experiment_config
 from btcspiker_ml.search import SearchState, run_stage
 from scripts.run_experiments import (
+    _TemporalCalibrationSplit,
     _candidate_model,
     _roundtrip_feature_parity,
     build_stage_trials,
 )
 
 
-def _write_config(tmp_path: Path, *, linear_trials: int = 4) -> tuple[Path, dict]:
+def _write_config(
+    tmp_path: Path, *, linear_trials: int = 4, drifting_prevalence: bool = False
+) -> tuple[Path, dict]:
     dataset = tmp_path / "features.parquet"
     rows = 1_600
     rng = np.random.default_rng(42)
+    if drifting_prevalence:
+        # Real corpora do not hold a constant event rate across folds; a uniform
+        # target hides reference errors that only appear when prevalence moves.
+        target = rng.binomial(1, np.linspace(0.15, 0.55, rows))
+    else:
+        target = np.arange(rows) % 2
     frame = pd.DataFrame(
         {
             "timestamp": pd.date_range("2026-01-01", periods=rows, freq="s", tz="UTC"),
-            "vol_spike": np.arange(rows) % 2,
+            "vol_spike": target,
             "future_vol_60s": rng.random(rows),
             "log_return": rng.normal(size=rows),
             "spread_bps": rng.random(rows),
@@ -166,7 +178,9 @@ def test_parallel_trials_do_not_start_nested_estimator_pools(tmp_path: Path):
         config,
     )
 
-    assert model.named_steps["model"].n_jobs == 1
+    calibrator = model.named_steps["model"]
+    assert calibrator.n_jobs == 1
+    assert calibrator.estimator.n_jobs == 1
 
 
 def test_feature_parity_compares_refitted_model_with_serialized_runtime_model():
@@ -226,3 +240,100 @@ def test_development_winner_is_registration_ready_without_opening_holdout(
         pd.DataFrame({"log_return": [0.0], "spread_bps": [0.1]})
     ).shape == (1, 2)
     assert state.final_holdout_opened is False
+
+
+def _regime_shift_frame(
+    rows: int = 6_000, seed: int = 7
+) -> tuple[pd.DataFrame, np.ndarray, int]:
+    """Rare events whose driver weakens in the later window.
+
+    Reproduces the rehearsal's calibration failure: the features drift and the
+    signal-to-target coupling decays, so a model fitted on the earlier window
+    stays confident while it stops being right.
+    """
+    rng = np.random.default_rng(seed)
+    signal = rng.normal(size=rows)
+    cut = int(rows * 0.75)
+    signal[cut:] += 1.2
+    probability = 1.0 / (1.0 + np.exp(-(0.9 * signal - 2.4)))
+    probability[cut:] = 1.0 / (1.0 + np.exp(-(0.3 * signal[cut:] - 2.4)))
+    target = rng.binomial(1, probability)
+    frame = pd.DataFrame({"log_return": signal, "spread_bps": rng.normal(size=rows)})
+    return frame, target, cut
+
+
+def test_calibration_split_trains_before_the_rows_it_calibrates_on():
+    split = _TemporalCalibrationSplit(0.25)
+
+    fit_rows, calibration_rows = next(split.split(np.zeros((100, 2))))
+
+    assert fit_rows.max() < calibration_rows.min()
+    assert len(calibration_rows) == 25
+    assert split.get_n_splits() == 1
+
+
+def test_deployable_candidate_probabilities_do_not_regress_brier_against_prevalence(
+    tmp_path: Path,
+):
+    path, _raw = _write_config(tmp_path)
+    config = load_experiment_config(path)
+    frame, target, cut = _regime_shift_frame()
+    train_x, train_y = frame.iloc[:cut], target[:cut]
+    test_x, test_y = frame.iloc[cut:], target[cut:]
+
+    candidate = _candidate_model(
+        {
+            "model_family": "extra_trees",
+            "params": {"n_estimators": 5, "min_samples_leaf": 1},
+        },
+        config,
+    )
+    candidate.fit(train_x, train_y)
+    candidate_brier = brier_score_loss(test_y, candidate.predict_proba(test_x)[:, 1])
+    prevalence_brier = brier_score_loss(
+        test_y, np.full(len(test_y), float(train_y.mean()))
+    )
+
+    assert candidate_brier / prevalence_brier <= 1.05
+
+
+def test_development_trials_report_calibration_against_the_prevalence_baseline(
+    tmp_path: Path,
+):
+    path, raw = _write_config(tmp_path, linear_trials=1)
+    config = load_experiment_config(path)
+    trial = build_stage_trials(config, raw, "linear")[0]
+
+    metrics = trial["evaluate"]()["metrics"]
+
+    assert metrics["development_brier_ratio"] > 0.0
+
+
+def test_prevalence_baseline_scores_a_neutral_calibration_ratio(tmp_path: Path):
+    """The baseline is the reference, so it must measure as neither better nor worse."""
+    path, raw = _write_config(tmp_path, linear_trials=1, drifting_prevalence=True)
+    config = load_experiment_config(path)
+    trial = build_stage_trials(config, raw, "baseline")[0]
+
+    metrics = trial["evaluate"]()["metrics"]
+
+    assert metrics["development_brier_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_development_trials_report_how_many_folds_beat_prevalence(tmp_path: Path):
+    path, raw = _write_config(tmp_path, linear_trials=1)
+    config = load_experiment_config(path)
+    trial = build_stage_trials(config, raw, "linear")[0]
+
+    metrics = trial["evaluate"]()["metrics"]
+
+    assert 0 <= metrics["development_folds_won"] <= config.validation.folds
+
+
+def test_prevalence_baseline_is_never_wrapped_in_calibration(tmp_path: Path):
+    path, _raw = _write_config(tmp_path)
+    config = load_experiment_config(path)
+
+    baseline = _candidate_model({"model_family": "development_prevalence"}, config)
+
+    assert isinstance(baseline.named_steps["model"], DummyClassifier)
