@@ -432,7 +432,9 @@ def maybe_prune(conn: sqlite3.Connection, inserted_since_prune: int) -> bool:
                 {NEWEST_ORDER_SQL}
                 LIMIT ?
             )
-            """.format(NEWEST_ORDER_SQL=NEWEST_ORDER_SQL),
+            """.format(
+                NEWEST_ORDER_SQL=NEWEST_ORDER_SQL
+            ),
             (PRUNE_KEEP_ROWS,),
         )
     return True
