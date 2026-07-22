@@ -161,3 +161,43 @@ remaining_blockers: >
   the tournament, not just a bigger dataset.
 production_status: unchanged
 ```
+
+## Dress-rehearsal re-run after the calibration fix (2026-07-22)
+
+Same 150,000-row slice and same trial budget; the only change is the code.
+Two defects the first rehearsal exposed are fixed, and a third — the one the
+rehearsal exists to catch — is now caught before the holdout is spent.
+
+```text
+result_status: blocked (no candidate earned a stage win)
+search_id: rehearsal-2026-07-22
+final_holdout: {opened: false, accessed_at: null}
+baseline_run_id: 236c36a282304bf2b46e46757e0bf15f
+best_candidate_run_id: none — no candidate cleared the selection bars
+```
+
+**Calibration is fixed.** Candidates are now wrapped in a Platt calibrator
+fitted on a chronological tail of each training window. Measured across all
+five development folds on the real slice:
+
+| Model | Brier ratio raw | Brier ratio calibrated |
+|---|---|---|
+| `development_prevalence` (reference) | 1.000 | n/a — never calibrated |
+| `sgd_logistic` (alpha 27.14, the failed winner) | 2.305 | 1.027 |
+| `hist_gradient_boosting` | 2.129 | 1.007 |
+
+Every calibrated candidate now scores between 1.018 and 1.045, inside the
+1.05 bar that `brier_regression_over_five_percent` enforces.
+
+**The remaining failure is the data, not the code.** No candidate beats a
+constant prevalence predictor on four of five folds — the best reaches three.
+A 22-hour slice at 8.6% prevalence does not contain enough consistent signal,
+which is the point of running against 30+ days.
+
+**The holdout survived.** Selection now applies qualification's own bars, so
+no candidate was crowned, and `qualify_candidate.py` refuses to open the
+holdout for a run that never earned a stage win. The first rehearsal spent
+its one-shot holdout to discover a defect that development evidence already
+contained; this one did not. Expect the same protection to hold in Phase 7:
+if the 30-day corpus cannot produce a candidate that clears both bars, the
+run ends with no winner and a sealed holdout rather than a burned one.
