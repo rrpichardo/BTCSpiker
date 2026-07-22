@@ -154,6 +154,33 @@ def test_retries_retryable_status_with_retry_after_before_success():
     assert sleeps == [2.0]
 
 
+def test_fifth_retryable_failure_includes_request_context():
+    session = TradeSession([Response(503, {}) for _ in range(5)])
+    sleeps = []
+    trade_client = CoinbaseTradeClient(session=session, sleep=sleeps.append)
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"date={DAY} end={DAY_END} status=503",
+    ):
+        list(trade_client.iter_day_trades(DAY))
+
+    assert len(session.calls) == 5
+    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+
+
+def test_nonretryable_4xx_fails_immediately():
+    session = TradeSession([Response(400, {})])
+    sleeps = []
+    trade_client = CoinbaseTradeClient(session=session, sleep=sleeps.append)
+
+    with pytest.raises(RuntimeError, match="status=400"):
+        list(trade_client.iter_day_trades(DAY))
+
+    assert len(session.calls) == 1
+    assert sleeps == []
+
+
 def test_module_iterator_delegates_to_the_public_client(fake_trade_session):
     trades = list(iter_day_trades(DAY, session=fake_trade_session, sleep=lambda _: None))
     assert [trade.trade_id for trade in trades] == ["97", "98", "99", "100"]
@@ -186,7 +213,7 @@ def test_configured_product_controls_request_endpoint():
     assert session.calls[0][0].endswith("/products/ETH-USD/ticker")
 
 
-def test_trade_inside_day_start_epoch_second_completes_day():
+def test_short_page_inside_day_start_epoch_second_completes_day():
     first_second = DAY_START + 0.5
     session = TradeSession(
         [Response(200, {"trades": [trade("first", first_second)]})]
@@ -197,3 +224,23 @@ def test_trade_inside_day_start_epoch_second_completes_day():
 
     assert trades[0].event_time.microsecond == 500_000
     assert trade_client.last_completion is not None
+
+
+def test_full_page_inside_day_start_epoch_second_cannot_certify_completion():
+    full_page = [
+        trade(str(index), DAY_START + (1000 - index) / 2000)
+        for index in range(1000)
+    ]
+    session = TradeSession(
+        [
+            Response(200, {"trades": full_page}),
+            Response(200, {"trades": full_page}),
+        ]
+    )
+    trade_client = client(session)
+
+    with pytest.raises(TradePageStalledError, match="did not move backward"):
+        list(trade_client.iter_day_trades(DAY))
+
+    assert len(session.calls) == 2
+    assert trade_client.last_completion is None

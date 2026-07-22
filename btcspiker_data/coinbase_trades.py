@@ -12,6 +12,7 @@ from .contracts import TradeEvent
 
 
 _ENDPOINT_PREFIX = "https://api.coinbase.com/api/v3/brokerage/market/products"
+_PAGE_LIMIT = 1000
 _RETRYABLE = {429, 500, 502, 503, 504}
 
 
@@ -81,7 +82,10 @@ class CoinbaseTradeClient:
                 raise TradePageStalledError(
                     f"oldest trade did not move backward for {source_date} at end={page_end}"
                 )
-            if int(oldest.timestamp()) <= start_epoch:
+            if (
+                int(oldest.timestamp()) <= start_epoch
+                and len(page_events) < _PAGE_LIMIT
+            ):
                 break
             previous_oldest = oldest
             page_end = int(oldest.timestamp())
@@ -99,7 +103,7 @@ class CoinbaseTradeClient:
             self._acquire_token()
             response = self.session.get(
                 f"{_ENDPOINT_PREFIX}/{quote(self.product_id, safe='-')}/ticker",
-                params={"limit": 1000, "start": start_epoch, "end": page_end},
+                params={"limit": _PAGE_LIMIT, "start": start_epoch, "end": page_end},
                 headers={"User-Agent": "BTCSpiker-research/1"},
                 timeout=(5, 30),
             )
