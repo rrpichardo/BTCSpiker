@@ -184,7 +184,7 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
                     )
                 elif outcome == "finished":
                     metrics = dict(record.get("metrics", {}))
-                    eligible = _selection_eligible(metrics, values)
+                    eligible = _selection_eligible(metrics, values, stage)
                     tracker.log_tags({"selection_eligible": eligible})
                     tracker.end_run("FINISHED")
                     score = metrics.get("aggregate_pr_auc")
@@ -223,14 +223,20 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
         state.save(state_path)
 
 
-def _selection_eligible(metrics: Mapping[str, Any], values: Mapping[str, Any]) -> bool:
+def _selection_eligible(metrics: Mapping[str, Any], values: Mapping[str, Any], stage: str) -> bool:
     """Refuse a stage win to a trial that already fails qualification's bars.
 
     Selection used to rank on mean fold score alone, so a candidate could take
     a stage on one lucky fold, or while badly calibrated, and only lose
     qualification afterwards — once the sealed holdout had been spent.  Both
     bars are the same ones qualification applies.
+
+    The baseline stage is exempt: it is the reference those bars are measured
+    against, scores exactly prevalence, and so can never beat prevalence.
+    Gating it leaves qualification with no baseline to compare against at all.
     """
+    if stage == "baseline":
+        return True
     max_brier_ratio = values.get("max_development_brier_ratio")
     if max_brier_ratio is not None:
         ratio = metrics.get("development_brier_ratio")
