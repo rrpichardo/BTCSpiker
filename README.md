@@ -8,22 +8,27 @@ BTCSpiker started as a school project and has since grown into a polished, produ
 ## Quick Start
 
 ```bash
+cp .env.example .env
 docker compose up -d --build
 curl http://localhost:8000/health
+curl http://localhost:8090/health
 curl -X POST http://localhost:8000/predict -H "Content-Type: application/json" -d @handoff/data_sample/sample.json
 ```
 
-BTCSpiker is a real-time service that streams Coinbase style ticks into Kafka, generates rolling window features, and serves predictions via a FastAPI API. The system runs end to end in replay mode with Prometheus and Grafana monitoring, and supports rollback using MODEL_VARIANT.
+Open the web UI at http://localhost:3001.
+
+BTCSpiker is a real-time service that streams Coinbase style ticks into Kafka, generates rolling window features, and serves predictions via a FastAPI API. Prediction events are published to Kafka and projected into a SQLite read model for the web UI. The system runs end to end in replay mode with Prometheus and Grafana monitoring, and supports rollback using MODEL_VARIANT.
 
 ## Canonical startup
 
 ### Environment
 
 ```bash
-cp .env.example .env   # optional: override defaults
+cp .env.example .env   # required: mounted read-only by the API settings view
 docker compose up -d
 # Wait ~30s for Kafka and MLflow init, then:
 curl http://localhost:8000/health
+curl http://localhost:8090/health
 ```
 
 Use this root README together with the root `docker-compose.yaml` as the only startup guide for the project.
@@ -104,12 +109,37 @@ docker compose --profile live up -d ws-ingestor
 
 Both ingestion modes publish to the same `ticks.raw` Kafka topic, so only one should run at a time.
 
+## Runtime Architecture
+
+```text
+Coinbase/replay → ticks.raw → featurizer → ticks.features (immediate) → predict-bridge
+    → FastAPI /predict → ticks.predictions → materializer → SQLite read model
+                                                       ↗            ↘ nginx UI on :3001
+                          ticks.outcomes (60s delayed) ┘
+```
+
+Kafka is the source of truth for prediction events. The materializer owns a
+disposable SQLite read model on the `predictions-data` volume and can rebuild it
+by replaying `ticks.predictions` and `ticks.outcomes`. The UI uses same-origin
+nginx routes: `/api/predictions/*` reaches the materializer and other `/api/*`
+requests reach the FastAPI service.
+
+The featurizer publishes each feature row to `ticks.features` **the instant its
+tick arrives** — predictions are genuine online forecasts, not retrodictions.
+The exact 60-second-forward label for that same row is computed separately and
+published ~60 seconds later to `ticks.outcomes`, keyed by a stable `feature_id`.
+The materializer joins predictions to outcomes on that ID and grades only rows
+where the prediction's own scoring timestamp precedes the outcome being written
+— proof the model called it before the answer existed. See the **Performance**
+tab and `docs/runbook.md` for how this is exposed.
 
 ## Endpoints and Dashboards
 
 | Service | URL | Notes |
 |---|---|---|
 | API | http://localhost:8000 | `/health`, `/predict`, `/version`, `/metrics` |
+| Web UI | http://localhost:3001 | Predictions, Performance, read-only settings, and system status |
+| Materializer | http://localhost:8090 | `/health`, `/predictions/recent`, `/predictions/performance` |
 | MLflow | http://localhost:5001 | Training-run tracking |
 | Prometheus | http://localhost:9090 | Scrapes API + kafka-exporter |
 | Grafana | http://localhost:3000 | Anonymous viewer; dashboard "BTC Volatility Detector — API" |
@@ -130,7 +160,10 @@ Roll forward with `MODEL_VARIANT=ml docker compose up -d api`. The Grafana **Act
 ```
 api/             FastAPI prediction service (loads lr_pipeline.pkl)
 features/        Featurizer Kafka consumer + rolling-window functions
-scripts/         replay_to_kafka.py, ws_ingest.py, replay.py, drift_report.py
+materializer/    ticks.predictions + ticks.outcomes consumer, disposable SQLite
+                 read model, and the Performance-tab grading endpoint
+ui/              React web UI + nginx same-origin proxy
+scripts/         Ingestors, prediction bridge, replay, and drift tooling
 tests/           Smoke tests (test_api.py) + load test (load_test.py)
 docker/          Dockerfile.api + Dockerfile.worker + requirements files
 monitoring/      prometheus.yml + Grafana provisioning + dashboard JSON
@@ -167,6 +200,6 @@ CI runs lint (Black/Ruff) plus a replay integration smoke test that brings up th
 Specifically, `.github/workflows/ci.yaml` runs two jobs on every push to `main` and on every pull request:
 
 1. **`lint`** — runs `black --check` and `ruff check` across `api/` and `tests/`.
-2. **`integration-replay`** — starts the Docker Compose stack, waits for `/health`, runs `pytest tests/test_replay_integration.py`, and tears down. This is the smoke-level integration gate; comprehensive multi-scenario load testing is validated locally before merge.
+2. **`integration-replay`** — starts the Docker Compose stack, waits for the API and web UI, runs `pytest tests/test_replay_integration.py`, asserts the UI proxy returns a nonempty `/api/predictions/recent` response, and tears down. This is the smoke-level integration gate; comprehensive multi-scenario load testing is validated locally before merge.
 
 The CI does not attempt to reproduce the full production monitoring stack validation (Grafana panels, Prometheus scrape correctness, Kafka-exporter lag) in the GitHub Actions runner — those are covered by the local smoke test documented in [docs/runbook.md](docs/runbook.md).

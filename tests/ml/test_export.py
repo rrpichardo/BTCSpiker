@@ -18,7 +18,7 @@ def _logged_run(tmp_path: Path) -> str:
             "predictions/final.csv": "score",
             "plots/pr_auc.txt": "plot",
             "model-card.md": "# Model card",
-            "qualification.json": "{\"passed\": true}",
+            "qualification.json": '{"passed": true}',
             "dependencies.txt": "package==1.0",
         }.items():
             path = tmp_path / relative_path
@@ -31,7 +31,9 @@ def _logged_run(tmp_path: Path) -> str:
         return run.info.run_id
 
 
-def test_export_run_copies_mlflow_artifacts_with_manifest_and_verified_checksums(tmp_path: Path):
+def test_export_run_copies_mlflow_artifacts_with_manifest_and_verified_checksums(
+    tmp_path: Path,
+):
     run_id = _logged_run(tmp_path)
 
     manifest = export_run(run_id, tmp_path / "exports")
@@ -41,9 +43,14 @@ def test_export_run_copies_mlflow_artifacts_with_manifest_and_verified_checksums
     assert (destination / "export-manifest.json").exists()
     entries = json.loads((destination / "export-manifest.json").read_text())["files"]
     assert set(entries) >= {
-        "model/model.bin", "configs/config.json", "manifests/dataset.json",
-        "predictions/final.csv", "plots/pr_auc.txt", "model-card.md",
-        "qualification.json", "dependencies.txt",
+        "model/model.bin",
+        "configs/config.json",
+        "manifests/dataset.json",
+        "predictions/final.csv",
+        "plots/pr_auc.txt",
+        "model-card.md",
+        "qualification.json",
+        "dependencies.txt",
     }
     assert manifest.verify()
 
@@ -56,7 +63,9 @@ def test_export_run_refuses_to_replace_an_immutable_existing_export(tmp_path: Pa
         export_run(run_id, tmp_path / "exports")
 
 
-def test_export_run_aborts_when_published_destination_checksum_is_corrupt(tmp_path: Path, monkeypatch):
+def test_export_run_aborts_when_published_destination_checksum_is_corrupt(
+    tmp_path: Path, monkeypatch
+):
     run_id = _logged_run(tmp_path)
     import btcspiker_ml.export as exporter
 

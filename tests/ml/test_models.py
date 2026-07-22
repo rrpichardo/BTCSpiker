@@ -8,7 +8,10 @@ from btcspiker_ml.models import build_model, model_families, suggest_params
 
 @pytest.mark.parametrize("family", model_families("all"))
 def test_every_tabular_model_returns_probabilities(family):
-    if family in {"lightgbm", "xgboost", "catboost"} and importlib.util.find_spec(family) is None:
+    if (
+        family in {"lightgbm", "xgboost", "catboost"}
+        and importlib.util.find_spec(family) is None
+    ):
         pytest.skip(f"optional {family} package is not installed")
 
     X = np.array([[0.0], [1.0], [2.0], [3.0]])

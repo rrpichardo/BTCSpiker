@@ -175,12 +175,14 @@ def test_registered_candidate_requires_feature_identity_on_every_request(tmp_pat
     with open(MODEL_PATH, "rb") as artifact:
         pipeline = pickle.load(artifact)["pipeline"]
     with mlflow.start_run(experiment_id=experiment.experiment_id) as run:
-        mlflow.log_params({
-            "feature_cols": ",".join(FEATURE_COLS),
-            "feature_set_id": "multi_window_v1",
-            "feature_schema_version": "2",
-            "tau": "0.5",
-        })
+        mlflow.log_params(
+            {
+                "feature_cols": ",".join(FEATURE_COLS),
+                "feature_set_id": "multi_window_v1",
+                "feature_schema_version": "2",
+                "tau": "0.5",
+            }
+        )
         mlflow.sklearn.log_model(pipeline, "model")
         run_id = run.info.run_id
     version = mlflow.register_model(f"runs:/{run_id}/model", "btc-volatility-candidate")
@@ -190,19 +192,36 @@ def test_registered_candidate_requires_feature_identity_on_every_request(tmp_pat
 
     port = _reserve_port()
     env = os.environ.copy()
-    env.update({
-        "MODEL_NAME": "btc-volatility-candidate",
-        "MODEL_STAGE": "Staging",
-        "MLFLOW_TRACKING_URI": tracking_uri,
-    })
+    env.update(
+        {
+            "MODEL_NAME": "btc-volatility-candidate",
+            "MODEL_STAGE": "Staging",
+            "MLFLOW_TRACKING_URI": tracking_uri,
+        }
+    )
     process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "api.main:app", "--host", HOST, "--port", str(port)],
-        cwd=PROJECT_ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "api.main:app",
+            "--host",
+            HOST,
+            "--port",
+            str(port),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     url = f"http://{HOST}:{port}"
     try:
         _wait_for_api(url, process)
-        response = requests.post(url + "/predict", json={"rows": [SAMPLE_ROW]}, timeout=5)
+        response = requests.post(
+            url + "/predict", json={"rows": [SAMPLE_ROW]}, timeout=5
+        )
         assert response.status_code == 422
         assert "feature_set_id is required" in response.text
     finally:
@@ -217,6 +236,12 @@ def test_predict_single(base_url):
     assert len(body["scores"]) == 1
     assert 0.0 <= body["scores"][0] <= 1.0
     assert body["model_variant"] == "ml"
+    # Model provenance: pickle fallback in this fixture ships a tau but no
+    # MLflow run_id.
+    assert "tau" in body
+    assert isinstance(body["tau"], float)
+    assert "run_id" in body
+    assert body["run_id"] is None
 
 
 def test_predict_accepts_legacy_v1_payload(base_url):
@@ -261,11 +286,15 @@ def test_bridge_row_preserves_registered_versions_through_api_validation(base_ur
 
     assert bridge_row["feature_set_id"] == "core_v1"
     assert bridge_row["feature_schema_version"] == "1"
-    accepted = requests.post(f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5)
+    accepted = requests.post(
+        f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5
+    )
     assert accepted.status_code == 200
 
     bridge_row["feature_schema_version"] = "altered"
-    rejected = requests.post(f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5)
+    rejected = requests.post(
+        f"{base_url}/predict", json={"rows": [bridge_row]}, timeout=5
+    )
     assert rejected.status_code == 422
     assert "feature_schema_version" in rejected.text
 

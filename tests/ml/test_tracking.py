@@ -29,8 +29,11 @@ def test_tracker_logs_required_lineage_and_artifacts(tmp_path: Path):
     run_id = tracker.start_run(_lineage())
     tracker.log_metrics({"fold_0_pr_auc": 0.2, "aggregate_pr_auc": 0.2})
     tracker.log_lineage_artifacts(
-        config={"seed": 42}, dataset_manifest={"rows": 4}, feature_manifest={"id": "core_v1"},
-        fold_boundaries=[{"fold": 0}], oof_predictions="a,b\n1,2\n",
+        config={"seed": 42},
+        dataset_manifest={"rows": 4},
+        feature_manifest={"id": "core_v1"},
+        fold_boundaries=[{"fold": 0}],
+        oof_predictions="a,b\n1,2\n",
     )
     tracker.end_run("FINISHED")
     client = mlflow.tracking.MlflowClient()
@@ -39,8 +42,11 @@ def test_tracker_logs_required_lineage_and_artifacts(tmp_path: Path):
     assert run.data.tags["run_status"] == "finished"
     assert run.data.metrics["aggregate_pr_auc"] == 0.2
     assert {item.path for item in client.list_artifacts(run_id)} >= {
-        "experiment-config.yaml", "dataset-manifest.json", "feature-manifest.json",
-        "fold-boundaries.json", "oof-predictions.csv",
+        "experiment-config.yaml",
+        "dataset-manifest.json",
+        "feature-manifest.json",
+        "fold-boundaries.json",
+        "oof-predictions.csv",
     }
 
 
@@ -55,10 +61,14 @@ def test_tracker_logs_loadable_sklearn_model_and_resource_timing(tmp_path: Path)
     mlflow.set_tracking_uri(tmp_path.as_uri())
     tracker = ExperimentTracker("test-experiment")
     run_id = tracker.start_run(_lineage())
-    model = DummyClassifier(strategy="prior").fit(np.array([[0.0], [1.0]]), np.array([0, 1]))
+    model = DummyClassifier(strategy="prior").fit(
+        np.array([[0.0], [1.0]]), np.array([0, 1])
+    )
 
     tracker.log_model(model, artifact_path="model")
-    tracker.log_resource_timing({"fit_seconds": 0.01, "inference_seconds": 0.02, "peak_rss_mb": 12.0})
+    tracker.log_resource_timing(
+        {"fit_seconds": 0.01, "inference_seconds": 0.02, "peak_rss_mb": 12.0}
+    )
     tracker.end_run("FINISHED")
 
     loaded = mlflow.sklearn.load_model(f"runs:/{run_id}/model")
@@ -66,4 +76,6 @@ def test_tracker_logs_loadable_sklearn_model_and_resource_timing(tmp_path: Path)
     client = mlflow.tracking.MlflowClient()
     run = client.get_run(run_id)
     assert run.data.metrics["fit_seconds"] == pytest.approx(0.01)
-    assert "resource-timing.json" in {item.path for item in client.list_artifacts(run_id)}
+    assert "resource-timing.json" in {
+        item.path for item in client.list_artifacts(run_id)
+    }

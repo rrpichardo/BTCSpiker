@@ -23,10 +23,12 @@ The canonical drift analysis is `handoff/reports/train_vs_test.html`. See `docs/
 ## Startup (cold)
 
 ```bash
-cp .env.example .env                   # optional — only needed if overriding defaults; plain `docker compose up -d` works on a fresh clone
+cp .env.example .env                   # required — mounted read-only by the API settings view
 docker compose up -d                   # ~30s for Kafka healthcheck to go green
-docker compose ps                      # 9 long-running services should be Up; kafka-init/mlflow-init should show Exited (0)
+docker compose ps                      # 11 long-running services should be Up; kafka-init/mlflow-init should show Exited (0)
 curl http://localhost:8000/health      # → {"status":"ok"}
+curl http://localhost:8090/health      # → materializer status and row/error counts
+curl -fsS http://localhost:3001/ >/dev/null && echo "UI reachable"
 ```
 
 ### First-Time Setup
@@ -62,7 +64,9 @@ plain `docker compose up -d` recovers without any manual cleanup.
 
 Open dashboards:
 
+- Web UI: http://localhost:3001
 - API metrics: http://localhost:8000/metrics
+- Materializer health: http://localhost:8090/health
 - Prometheus: http://localhost:9090 (Status → Targets should show all `up`)
 - Grafana: http://localhost:3000 → dashboard "BTC Volatility Detector — API"
 - MLflow: http://localhost:5001
@@ -91,13 +95,54 @@ not raw Coinbase tick messages.
 
 Replay mode is now truly end-to-end inside Compose: `ingestor` produces
 `ticks.raw`, `featurizer` produces `ticks.features`, and `predict-bridge`
-automatically POSTs each feature row into `/predict`. You can confirm that hop
-without the test harness:
+automatically POSTs each feature row into `/predict` and publishes the result to
+`ticks.predictions`. The `materializer` consumes those prediction events into
+the SQLite read model served to the UI. Kafka is the source of truth; SQLite is
+a disposable projection rebuilt by replaying the topic. You can confirm the
+path without the test harness:
 
 ```bash
 docker compose logs --tail=20 predict-bridge
+curl -s http://localhost:8090/health | jq .
+curl -s http://localhost:3001/api/predictions/recent | jq '{count}'
 curl -s "http://localhost:9090/api/v1/query?query=sum(predict_requests_total)" | jq .
 ```
+
+## Performance tab (model grading)
+
+The featurizer publishes each feature row **immediately** to `ticks.features`
+(real-time scoring, no delay), and separately publishes the exact 60-second
+label to `ticks.outcomes` once it's known, keyed by a stable `feature_id`. The
+materializer consumes both topics, joins them, and only grades a prediction
+if its own scoring timestamp (`api_ts`) precedes the moment the outcome fact
+was written to the DB (`written_at`) — proof the model scored it before the
+answer existed, not after. This is what the UI's **forecast lead** stat shows.
+
+```bash
+curl -s "http://localhost:8090/predictions/performance?window_minutes=30" | jq '.window'
+# median_lead_seconds should sit close to 60s on a healthy live/replay stream;
+# a value near 0 means predictions are arriving already-answered — treat that
+# as a pipeline bug, not a model problem.
+```
+
+Two grading modes are available (toggle in the UI): **official** grades
+against the fixed training-time spike definition (comparable to the
+`reference` block's training benchmarks — a calm window can legitimately show
+zero real spikes); **adaptive** re-derives "spike" as the top 15% of realized
+volatility *within the current window*, so there's always something to grade,
+at the cost of not being comparable to the training numbers. The benchmark
+note that can appear in official mode is deliberately cautious — it flags a
+gap versus the training PR-AUC but does not diagnose model drift vs. a calmer
+market, and does not fire on any window shorter than the project's own 7-day
+retraining-evaluation practice (`handoff/docs/model_card_v1.md`) would trust.
+
+**A featurizer restart loses grading continuity for predictions made just
+before it.** `feature_id` is scoped to a per-process boot token; on restart,
+in-flight rows from the just-stopped process can never receive a matching
+outcome (their `feature_id`'s pending horizon window was abandoned mid-flight
+in the old process's memory, not persisted). This shows up as a small, one-time
+bump in `n_predictions_unmatched` right after a featurizer restart — expected,
+not a bug — and self-heals as soon as fresh rows flow through the new boot.
 
 ## Switch to live ingestion
 
@@ -194,22 +239,48 @@ docker compose up -d api
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `kafka` container restarts in a loop | Stale KRaft volume after image upgrade | `docker compose down -v` then `docker compose up -d` (wipes Kafka volume, OK in replay mode) |
+| Pipeline silent after a Kafka outage/restart: workers show `Up` but no new messages flow (logs show `SESSTMOUT`/`_MSG_TIMED_OUT` then nothing) | The long-running `ingestor`, `featurizer`, and `predict-bridge` Kafka clients can wedge after the broker goes away and comes back — the process stays alive, so `restart: on-failure` never fires | `docker compose restart ingestor featurizer predict-bridge`. The materializer detects this itself (its `/health` probe goes `ok: false` within ~6 s and recovers automatically); the other workers have no health probe and need the manual restart. |
 | `ingestor` exits with `Kafka bootstrap … not reachable` | Started before `kafka-init` finished | `docker compose restart ingestor` (the service has `restart: on-failure` so it usually self-heals) |
 | `featurizer` runs but `ticks.features` offset stays at 0 | First 60 s of ticks are still in the label-delay buffer | Wait — labels emit only after `horizon_sec` (60 s) of future history. Confirm with `docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic ticks.features --time -1` |
 | `predict-bridge` logs repeated 5xx / connection errors | API is unhealthy or still starting | `docker compose restart api predict-bridge` and check `curl http://localhost:8000/health` |
 | `predict_requests_total` stays flat while `ticks.features` grows | The bridge is not consuming or is stuck on an uncommitted message | Check `docker compose logs predict-bridge`; if needed restart `docker compose restart predict-bridge` |
+| Materializer receives fresh events but `last_write_ts` is stale | SQLite writes are stalled or failing | Check `curl -s http://localhost:8090/health | jq .` and `docker compose logs materializer`; restart the service, then use the read-model rebuild procedure below if it remains stalled. |
+| `/predictions/performance` shows `n_graded: 0` / all-null metrics indefinitely | No `ticks.outcomes` events are arriving — the featurizer's delayed-label path is stuck, or fewer than 60s of traffic has flowed since the materializer's outcomes consumer started | Wait ~90s on a fresh stack (outcomes only exist 60s after their feature row). If still zero, check `docker compose logs featurizer \| grep -i outcome` and confirm `ticks.outcomes` has messages: `docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic ticks.outcomes --time -1`. |
+| UI returns `502 Bad Gateway` | The API or materializer nginx upstream is down/unhealthy | Check `curl -f http://localhost:8000/health`, `curl -f http://localhost:8090/health`, and `docker compose ps`; inspect `docker compose logs ui api materializer` before restarting the unhealthy service. |
 | `/predict` returns 500 with `Model not found` | Volume mount didn't pick up `lr_pipeline.pkl` | Rebuild API: `docker compose up -d --build api` |
 | Grafana panels say "No data" | Prometheus hasn't scraped yet, or `api` job is `down` | Visit http://localhost:9090/targets and check the `api` row. If `down`, restart with `docker compose restart prometheus` |
 | Consumer-lag panel empty | `kafka-exporter` not up | `docker compose up -d kafka-exporter`; check logs |
 
 ## Recovery Procedures
 
-**Full reset (loses Kafka data + Grafana dashboards state, keeps source code):**
+**Full reset (loses Kafka data, the SQLite read model, and dashboard state; keeps source code):**
 
 ```bash
 docker compose down -v
 docker compose up -d
 ```
+
+**Rebuild only the disposable predictions read model:**
+
+Capture the materializer's named volume before removing its container, then
+delete only that volume and recreate the service. The new empty projection
+causes the materializer to replay retained `ticks.predictions` **and**
+`ticks.outcomes` events from Kafka, rebuilding both the raw prediction log
+and the grading data the Performance tab depends on.
+
+```bash
+PREDICTIONS_VOLUME=$(docker inspect "$(docker compose ps -q materializer)" \
+  --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')
+docker compose stop materializer
+docker compose rm -f materializer
+docker volume rm "$PREDICTIONS_VOLUME"
+docker compose up -d materializer
+curl -s http://localhost:8090/health | jq .
+```
+
+This rebuild cannot recover prediction events that were also removed from
+Kafka. Do not treat `predictions.db` as an independent backup or source of
+truth.
 
 **Restart one component:**
 
@@ -225,6 +296,10 @@ docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
     --broker-list localhost:9092 --topic ticks.raw --time -1
 docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
     --broker-list localhost:9092 --topic ticks.features --time -1
+docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell \
+    --broker-list localhost:9092 --topic ticks.predictions --time -1
+curl -s http://localhost:8090/health | jq .
+curl -s http://localhost:3001/api/predictions/recent | jq '{count}'
 curl -s "http://localhost:9090/api/v1/query?query=sum(predict_requests_total)" | jq .
 ```
 
@@ -240,7 +315,7 @@ python scripts/drift_report.py \
 ## Shutdown
 
 ```bash
-docker compose down                    # keeps volumes (Kafka, MLflow, Grafana state)
+docker compose down                    # keeps named volumes, including predictions-data
 docker compose down -v                 # nukes everything
 ```
 

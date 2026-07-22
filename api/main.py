@@ -38,6 +38,9 @@ from prometheus_client import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.responses import JSONResponse, Response
 
+from api.settings_view import router as settings_router
+from api.system import router as system_router
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -278,6 +281,18 @@ class PredictResponse(BaseModel):
     )
     version: str = Field(description="Human-readable model bundle version.")
     ts: str = Field(description="UTC wall-clock timestamp when scoring completed.")
+    tau: float | None = Field(
+        description=(
+            "The decision threshold shipped with the loaded model; scores >= tau "
+            "count as spike alerts; null when the variant has no threshold."
+        )
+    )
+    run_id: str | None = Field(
+        description=(
+            "MLflow run ID of the loaded model; null on pickle fallback or "
+            "baseline variant."
+        )
+    )
 
 
 class VersionResponse(BaseModel):
@@ -334,6 +349,8 @@ SCORERS = {"ml": _score_ml, "baseline": _score_baseline}
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="BTC Volatility Spike Detector")
+app.include_router(settings_router)
+app.include_router(system_router)
 
 
 def _json_safe(value):
@@ -447,6 +464,8 @@ def predict(req: PredictRequest):
             model_variant=MODEL_VARIANT,
             version=MODEL_VERSION,
             ts=datetime.now(timezone.utc).isoformat(),
+            tau=TAU,
+            run_id=mlflow_run_id,
         )
     except HTTPException:
         REQUEST_ERRORS.labels(model_variant=MODEL_VARIANT).inc()

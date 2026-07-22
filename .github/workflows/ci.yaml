@@ -20,13 +20,31 @@ jobs:
         run: pip install black ruff
 
       - name: Black (format check)
-        run: black --check api/ tests/
+        run: black --check api/ materializer/ scripts/feature_to_predict_bridge.py tests/
 
       - name: Ruff (lint check)
-        run: ruff check api/ tests/
+        run: ruff check api/ materializer/ scripts/feature_to_predict_bridge.py tests/
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install unit-test dependencies
+        # requirements-ml.txt pulls in pandas/pyarrow/mlflow/sklearn (via
+        # handoff/requirements.txt) plus psutil/optuna — tests/ml/ imports
+        # all of these at collection time.
+        run: pip install -r requirements-dev.txt -r docker/requirements.api.txt -r materializer/requirements.txt -r requirements-ml.txt
+
+      - name: Run unit tests
+        run: pytest tests --ignore=tests/test_replay_integration.py
 
   integration-replay:
-    needs: lint
+    needs: [lint, unit]
     runs-on: ubuntu-latest
     # This job must pass before a PR can be merged — do not add continue-on-error
     steps:
@@ -41,7 +59,8 @@ jobs:
       - name: Wait for stack to be healthy
         run: |
           for i in {1..60}; do
-            if curl -sf http://localhost:8000/health; then
+            if curl -sf http://localhost:8000/health >/dev/null && \
+               curl -sf http://localhost:3001/ >/dev/null; then
               exit 0
             fi
             sleep 2
@@ -58,6 +77,11 @@ jobs:
 
       - name: Run replay integration test
         run: pytest tests/test_replay_integration.py -v --tb=short --retries 2
+
+      - name: Assert predictions reach the UI proxy
+        run: |
+          curl -sf http://localhost:3001/api/predictions/recent \
+            | jq -e '.count > 0 and (.predictions | length > 0)'
 
       - name: Dump logs on failure
         if: failure()

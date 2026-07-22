@@ -7,10 +7,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY features/ features/
 COPY scripts/ scripts/
+COPY btcspiker_ml/ btcspiker_ml/
 COPY config.yaml .
 
-# featurizer.py does `from feature_funcs import ...` (flat imports)
-ENV PYTHONPATH=/app/features
+# featurizer.py imports FeatureEngine from btcspiker_ml.features (train/serve
+# parity with the tournament) as well as feature_funcs via flat imports, so
+# both /app (package root) and /app/features need to be on the path.
+ENV PYTHONPATH=/app:/app/features
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-u", "features/featurizer.py", "--config", "/app/config.yaml"]
