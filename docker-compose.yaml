@@ -29,7 +29,15 @@
 #
 # Env vars are documented in .env.example. The .env file must exist because the
 # api mounts it read-only to report saved settings alongside active settings.
+#
+# Project name is pinned below so `docker compose` always targets the same
+# stack regardless of which directory or worktree it's invoked from — without
+# this, Compose derives the project name from the current directory's
+# basename, so running from a worktree (e.g. .claude/worktrees/phase2-bridge)
+# would silently spin up a second, separate stack on the same ports.
 # =============================================================================
+
+name: btcspiker
 
 services:
 
