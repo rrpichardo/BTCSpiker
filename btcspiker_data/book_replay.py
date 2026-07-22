@@ -11,7 +11,7 @@ from typing import Any
 import pyarrow as pa
 
 from .contracts import BookState, RAW_BOOK_COLUMNS
-from .storage import PartitionRecord, write_partition_atomic
+from .storage import PartitionRecord, write_empty_partition_atomic, write_partition_atomic
 
 
 class BookReplayError(ValueError):
@@ -209,7 +209,8 @@ def replay_day(
 
 
 def publish_replay_day(
-    states: Iterable[BookState], *, root: str | Path, source_revision: str, source_date: str, source: str = "cbb26"
+    states: Iterable[BookState], *, root: str | Path, source_revision: str,
+    source_date: str, product_id: str, source: str = "cbb26"
 ) -> list[PartitionRecord]:
     """Publish derived L2 states as immutable hourly partitions.
 
@@ -221,7 +222,17 @@ def publish_replay_day(
         hour = state.observed_through.replace(minute=0, second=0, microsecond=0)
         grouped.setdefault(hour, []).append(state)
     records: list[PartitionRecord] = []
-    for hour, rows in sorted(grouped.items()):
+    day_start = datetime.fromisoformat(source_date).replace(tzinfo=timezone.utc)
+    for hour_offset in range(24):
+        hour = day_start + timedelta(hours=hour_offset)
+        rows = grouped.get(hour, [])
+        if not rows:
+            records.append(
+                write_empty_partition_atomic(
+                    root, "book_states", product_id, source=source, hour=hour
+                )
+            )
+            continue
         table = pa.table({
             "source": [source] * len(rows), "product_id": [row.product_id for row in rows],
             "observed_through": [row.observed_through for row in rows], "sequence_start": [row.sequence_start for row in rows],
@@ -231,7 +242,7 @@ def publish_replay_day(
             "changes_json": [json.dumps([])] * len(rows), "source_revision": [source_revision] * len(rows),
             "source_date": [source_date] * len(rows),
         })
-        records.append(write_partition_atomic(table, root, "book_states", rows[0].product_id))
+        records.append(write_partition_atomic(table, root, "book_states", product_id))
     return records
 
 
@@ -251,12 +262,20 @@ def publish_replay_partitions(
     closed when the caller supplied an excluded or otherwise unreplayed delta.
     """
     state_rows = list(states)
+    delta_rows = list(deltas)
+    product_id = next(
+        (state.product_id for state in state_rows),
+        next((_field(delta, "product_id") for delta in delta_rows if _field(delta, "product_id")), None),
+    )
+    if not isinstance(product_id, str) or not product_id:
+        raise BookReplayError("cannot publish replay partitions without product_id")
     records = publish_replay_day(
-        state_rows, root=root, source_revision=source_revision, source_date=source_date, source=source
+        state_rows, root=root, source_revision=source_revision, source_date=source_date,
+        product_id=product_id, source=source
     )
     by_second = {state.observed_through: state for state in state_rows}
     grouped: dict[datetime, list[dict[str, object]]] = {}
-    for delta in deltas:
+    for delta in delta_rows:
         changed = _utc(_field(delta, "changed_second"), "changed_second")
         state = by_second.get(changed)
         changes = _field(delta, "changes")
@@ -273,7 +292,17 @@ def publish_replay_partitions(
             "changes_json": json.dumps(changes, default=str, separators=(",", ":")),
             "source_revision": source_revision, "source_date": source_date,
         })
-    for _, rows in sorted(grouped.items()):
+    day_start = datetime.fromisoformat(source_date).replace(tzinfo=timezone.utc)
+    for hour_offset in range(24):
+        hour = day_start + timedelta(hours=hour_offset)
+        rows = grouped.get(hour, [])
+        if not rows:
+            records.append(
+                write_empty_partition_atomic(
+                    root, "book_deltas", product_id, source=source, hour=hour
+                )
+            )
+            continue
         table = pa.table({name: [row[name] for row in rows] for name in RAW_BOOK_COLUMNS})
-        records.append(write_partition_atomic(table, root, "book_deltas", rows[0]["product_id"]))
+        records.append(write_partition_atomic(table, root, "book_deltas", product_id))
     return records

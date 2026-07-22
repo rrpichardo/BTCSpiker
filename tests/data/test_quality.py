@@ -2,12 +2,19 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
 from btcspiker_data.contracts import BookState, TradeEvent
 from btcspiker_data.quality import QUALIFIED_SECONDS_MIN, audit_dataset
 from btcspiker_data.raw_manifest import RawDatasetManifest
 
 
 UTC = timezone.utc
+
+
+def test_audit_rejects_negative_minimum_threshold():
+    with pytest.raises(ValueError, match="non-negative"):
+        audit_dataset(manifest(), minimum_qualified_seconds=-1)
 
 
 def manifest(completions=()):

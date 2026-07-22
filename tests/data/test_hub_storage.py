@@ -187,6 +187,7 @@ def test_upload_reuses_already_uploaded_matching_partition(tmp_path):
     api = ExistingApi()
     receipt = PrivateHubStore.connect(api_factory=lambda: api).upload_partition(part, _remote_path(part))
     assert receipt.revision == "a" * 40
+    assert receipt.reused is True
     assert api.uploads == 0
 
 

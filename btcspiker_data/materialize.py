@@ -30,8 +30,7 @@ def join_trades_to_books(
         {"product_id", "observed_through", "best_bid", "bid_size", "best_ask", "ask_size", "segment_id"},
         "book states",
     )
-    if "segment_id" not in trade_frame:
-        trade_frame["segment_id"] = 0
+    infer_segments = "segment_id" not in trade_frame
     if trade_frame["trade_id"].duplicated().any():
         raise ValueError("duplicate trade_id")
 
@@ -40,6 +39,18 @@ def join_trades_to_books(
     trade_frame["timestamp"] = pd.to_datetime(trade_frame.pop("event_time"), utc=True)
     book_frame["book_observed_through"] = pd.to_datetime(book_frame.pop("observed_through"), utc=True)
     book_frame["safe_at"] = book_frame["book_observed_through"] + pd.Timedelta(seconds=1)
+
+    if infer_segments:
+        safe_segments = book_frame.loc[:, ["product_id", "safe_at", "segment_id"]].drop_duplicates()
+        if safe_segments.duplicated(["product_id", "safe_at"]).any():
+            raise ValueError("book segments conflict at the same safe second")
+        trade_frame["safe_at"] = trade_frame["timestamp"].dt.floor("s")
+        trade_frame = trade_frame.merge(
+            safe_segments,
+            how="inner",
+            on=["product_id", "safe_at"],
+            validate="many_to_one",
+        )
 
     left = trade_frame.sort_values(["timestamp", "product_id", "segment_id"], kind="mergesort")
     right = book_frame.sort_values(["safe_at", "product_id", "segment_id"], kind="mergesort")

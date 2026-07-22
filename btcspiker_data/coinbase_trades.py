@@ -36,14 +36,18 @@ class CoinbaseTradeClient:
         session,
         *,
         product_id: str = "BTC-USD",
+        max_rps: int = 8,
         sleep: Callable[[float], None] = clock.sleep,
         monotonic: Callable[[], float] = clock.monotonic,
     ) -> None:
         self.session = session
         self.product_id = product_id
+        if type(max_rps) is not int or max_rps <= 0:
+            raise ValueError("max_rps must be a positive integer")
+        self.max_rps = max_rps
         self._sleep = sleep
         self._monotonic = monotonic
-        self._tokens = 8.0
+        self._tokens = float(max_rps)
         self._last_refill = monotonic()
         self.last_completion: TradeDayCompletion | None = None
 
@@ -124,10 +128,10 @@ class CoinbaseTradeClient:
 
     def _acquire_token(self) -> None:
         now = self._monotonic()
-        self._tokens = min(8.0, self._tokens + (now - self._last_refill) * 8.0)
+        self._tokens = min(float(self.max_rps), self._tokens + (now - self._last_refill) * self.max_rps)
         self._last_refill = now
         if self._tokens < 1:
-            delay = (1 - self._tokens) / 8.0
+            delay = (1 - self._tokens) / self.max_rps
             self._sleep(delay)
             self._last_refill = self._monotonic()
             self._tokens = 0.0

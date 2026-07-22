@@ -208,8 +208,11 @@ def audit_dataset(manifest: Any, *, book_intervals: Iterable[Any] = (), trades: 
                   book_states: Iterable[Any] = (), replay_incidents: Iterable[Any] = (),
                   excluded_intervals: Iterable[Any] = (), invalid_intervals: Iterable[Any] = (),
                   label_windows: Iterable[Any] = (), joined_ticks: Iterable[Any] = (),
-                  output_dir: str | Path | None = None) -> QualityReport:
+                  output_dir: str | Path | None = None,
+                  minimum_qualified_seconds: int = QUALIFIED_SECONDS_MIN) -> QualityReport:
     """Return a strict PASS/FAIL report; invalid evidence never becomes a warning."""
+    if type(minimum_qualified_seconds) is not int or minimum_qualified_seconds < 0:
+        raise ValueError("minimum_qualified_seconds must be a non-negative integer")
     failures: set[str] = set()
     intervals = _collect_intervals(book_intervals, failures)
     excluded = _collect_intervals(excluded_intervals, failures)
@@ -317,7 +320,7 @@ def audit_dataset(manifest: Any, *, book_intervals: Iterable[Any] = (), trades: 
             "exclusions": [{"start": a, "end": b} for a, b in excluded if a < end and start < b],
         }
         qualified += seconds
-    if qualified < QUALIFIED_SECONDS_MIN:
+    if qualified < minimum_qualified_seconds:
         failures.add("qualified_seconds_below_minimum")
     event_times = [_optional_value(item, "event_time") for item in trade_rows
                    if _is_utc_datetime(_optional_value(item, "event_time"))]
@@ -331,3 +334,8 @@ def audit_dataset(manifest: Any, *, book_intervals: Iterable[Any] = (), trades: 
     if output_dir is not None:
         _write_report(report, output_dir)
     return report
+
+
+def write_quality_report(report: QualityReport, output_dir: str | Path) -> None:
+    """Persist a previously combined strict quality report."""
+    _write_report(report, output_dir)

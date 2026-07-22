@@ -104,6 +104,43 @@ docker compose --profile live up -d ws-ingestor
 
 Both ingestion modes publish to the same `ticks.raw` Kafka topic, so only one should run at a time.
 
+## Free historical BTC-USD research data
+
+The historical pipeline acquires the reviewed 35-day Coinbase window for `$0`, validates at least 30 qualified day-equivalents, and stores normalized data in your private Hugging Face dataset. It does not start training or promote a model.
+
+First authenticate locally; never paste the token into a command, config file, or chat:
+
+```bash
+hf auth login
+hf auth whoami
+```
+
+Then run the pinned acquisition:
+
+```bash
+python scripts/download_coinbase_history.py \
+  --cache-root data/coinbase_history/cache \
+  --start 2026-04-24 \
+  --end 2026-05-28 \
+  --product BTC-USD \
+  --revision c1e89eded9915e1c75a18911298edfbbbe4050ce \
+  --max-rps 8
+```
+
+After a `PASS`, use the printed raw-manifest path to materialize the current seven-feature model input:
+
+```bash
+python scripts/materialize_coinbase_history.py \
+  --raw-manifest data/coinbase_history/cache/manifests/<RAW_DATASET_ID>.json \
+  --feature-set core_v1 \
+  --output-root data/coinbase_history
+
+export BTCSPIKER_EXISTING_DATA="$PWD/data/coinbase_history/features/core_v1/features.parquet"
+python scripts/bind_existing_dataset.py --config experiment.yaml
+```
+
+The same raw manifest can also produce `multi_window_v1` and `microstructure_v1` for later model optimization. See [the source decision](docs/data/source-decision.md) for the frozen sources, privacy controls, quality gate, and research-only license boundary.
+
 
 ## Endpoints and Dashboards
 

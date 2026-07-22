@@ -364,6 +364,7 @@ def restore_shard(
     disk_usage: Callable[[str | Path], Any] = shutil.disk_usage,
     cache_root: str | Path | None = None,
     database_url: str = CONTAINER_DATABASE_URL,
+    compose_environment: Mapping[str, str] | None = None,
 ) -> dict[str, int]:
     """Restore a custom dump into plain PostgreSQL and validate every source count."""
     validated_sidecar = _validate_sidecar(sidecar, shard)
@@ -381,6 +382,7 @@ def restore_shard(
     compose_prefix = [
         "docker", "compose", "-f", str(COMPOSE_FILE), "exec", "-T", "cbb26-staging",
     ]
+    environment_kwargs = {"env": dict(compose_environment)} if compose_environment is not None else {}
     truncate_sql = f"TRUNCATE {', '.join(f'{STAGING_SCHEMA}.{table}' for table in STAGING_TABLES)}"
     truncate_result = run(
         compose_prefix
@@ -390,6 +392,7 @@ def restore_shard(
         ],
         capture_output=True,
         text=True,
+        **environment_kwargs,
     )
     if truncate_result.returncode:
         raise CBB26IntegrityError(f"staging truncate failed: {getattr(truncate_result, 'stderr', '')}")
@@ -401,6 +404,7 @@ def restore_shard(
         ],
         capture_output=True,
         text=True,
+        **environment_kwargs,
     )
     if result.returncode:
         raise CBB26IntegrityError(f"pg_restore failed: {getattr(result, 'stderr', '')}")

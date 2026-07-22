@@ -207,8 +207,9 @@ def test_replay_publishes_raw_deltas_and_derived_states(tmp_path, replay_anchor,
 
     by_kind = {
         next(part.split("=", 1)[1] for part in record.path.parts if part.startswith("kind=")): record
-        for record in records
+        for record in records if record.row_count
     }
+    assert len(records) == 48
     assert set(by_kind) == {"book_deltas", "book_states"}
     delta_table = pq.ParquetFile(by_kind["book_deltas"].path).read()
     state_table = pq.ParquetFile(by_kind["book_states"].path).read()

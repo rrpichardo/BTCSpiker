@@ -205,6 +205,24 @@ def test_ninth_immediate_request_waits_for_token_refill():
     assert clock.sleeps == [0.125]
 
 
+def test_configured_rate_limit_controls_token_bucket():
+    page_seconds = [DAY_END - index * 100 for index in range(1, 5)] + [DAY_START]
+    session = TradeSession(
+        [Response(200, {"trades": [trade(str(index), second)]})
+         for index, second in enumerate(page_seconds)]
+    )
+    clock = ManualClock()
+
+    list(CoinbaseTradeClient(
+        session=session,
+        max_rps=4,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    ).iter_day_trades(DAY))
+
+    assert clock.sleeps == [0.25]
+
+
 def test_configured_product_controls_request_endpoint():
     session = TradeSession(
         [Response(200, {"trades": [trade("eth-1", DAY_START)]})]

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pyarrow as pa
 import pytest
 
-from btcspiker_data.storage import write_partition_atomic
+from btcspiker_data.storage import write_empty_partition_atomic, write_partition_atomic
 
 
 def _trade_table() -> pa.Table:
@@ -70,3 +70,21 @@ def test_book_deltas_reject_duplicate_observed_through_even_with_distinct_sequen
     table = _book_table([timestamp, timestamp], [42, 43], [42, 43])
     with pytest.raises(ValueError, match="duplicate stable keys"):
         write_partition_atomic(table, tmp_path, "book_deltas", "BTC-USD")
+
+
+@pytest.mark.parametrize("kind", ["trades", "book_deltas", "book_states"])
+def test_empty_hour_partition_has_canonical_schema_and_location(tmp_path, kind):
+    source = "coinbase_public_trades" if kind == "trades" else "cbb26"
+    hour = datetime(2026, 4, 24, 7, tzinfo=timezone.utc)
+
+    record = write_empty_partition_atomic(
+        tmp_path,
+        kind,
+        "BTC-USD",
+        source=source,
+        hour=hour,
+    )
+
+    assert record.row_count == 0
+    assert f"kind={kind}" in record.path.as_posix()
+    assert "hour=07" in record.path.as_posix()

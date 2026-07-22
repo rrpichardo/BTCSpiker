@@ -18,6 +18,7 @@ class UploadReceipt:
     remote_path: str
     sha256: str
     size_bytes: int
+    reused: bool = False
 
 
 def _file_sha256(path: Path) -> str:
@@ -128,7 +129,7 @@ class PrivateHubStore:
         if self._api.file_exists(repo_id=self.repo_id, filename=remote_path, repo_type="dataset"):
             revision = self._existing_revision(info)
             self._verify(remote_path, revision, partition.sha256)
-            return UploadReceipt(self.repo_id, revision, remote_path, partition.sha256, partition.size_bytes)
+            return UploadReceipt(self.repo_id, revision, remote_path, partition.sha256, partition.size_bytes, reused=True)
         commit = self._api.upload_file(path_or_fileobj=str(partition.path), path_in_repo=remote_path, repo_id=self.repo_id, repo_type="dataset")
         revision = self._exact_revision(
             getattr(commit, "oid", None),
@@ -145,7 +146,7 @@ class PrivateHubStore:
         if self._api.file_exists(repo_id=self.repo_id, filename=remote_path, repo_type="dataset"):
             revision = self._existing_revision(info)
             self._verify(remote_path, revision, digest)
-            return UploadReceipt(self.repo_id, revision, remote_path, digest, len(content))
+            return UploadReceipt(self.repo_id, revision, remote_path, digest, len(content), reused=True)
         commit = self._api.upload_file(path_or_fileobj=io.BytesIO(content), path_in_repo=remote_path, repo_id=self.repo_id, repo_type="dataset")
         revision = self._exact_revision(
             getattr(commit, "oid", None),

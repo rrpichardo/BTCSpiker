@@ -29,6 +29,23 @@ _KEY_COLUMNS = {
     "book_deltas": ("observed_through",),
     "book_states": ("observed_through",),
 }
+_EMPTY_TYPES = {
+    "trades": {
+        "event_time": pa.timestamp("us", tz="UTC"),
+    },
+    "book_deltas": {
+        "observed_through": pa.timestamp("us", tz="UTC"),
+        "sequence_start": pa.int64(),
+        "sequence_end": pa.int64(),
+        "segment_id": pa.int64(),
+    },
+    "book_states": {
+        "observed_through": pa.timestamp("us", tz="UTC"),
+        "sequence_start": pa.int64(),
+        "sequence_end": pa.int64(),
+        "segment_id": pa.int64(),
+    },
+}
 
 
 def _sha256(path: Path) -> str:
@@ -63,9 +80,14 @@ def _validate(table: pa.Table, kind: str, product_id: str) -> tuple[str, datetim
     return next(iter(sources)), hour
 
 
-def write_partition_atomic(table: pa.Table, root: str | Path, kind: str, product_id: str) -> PartitionRecord:
-    """Write an immutable hourly Parquet file and return its content identity."""
-    source, hour = _validate(table, kind, product_id)
+def _persist_partition(
+    table: pa.Table,
+    root: str | Path,
+    kind: str,
+    product_id: str,
+    source: str,
+    hour: datetime,
+) -> PartitionRecord:
     directory = Path(root) / "raw" / f"kind={kind}" / f"source={source}" / f"product={product_id}" / f"date={hour:%Y-%m-%d}" / f"hour={hour:%H}"
     directory.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=directory, prefix=".part-", suffix=".parquet", delete=False) as handle:
@@ -91,3 +113,36 @@ def write_partition_atomic(table: pa.Table, root: str | Path, kind: str, product
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def write_partition_atomic(table: pa.Table, root: str | Path, kind: str, product_id: str) -> PartitionRecord:
+    """Write an immutable non-empty hourly Parquet file."""
+    source, hour = _validate(table, kind, product_id)
+    return _persist_partition(table, root, kind, product_id, source, hour)
+
+
+def write_empty_partition_atomic(
+    root: str | Path,
+    kind: str,
+    product_id: str,
+    *,
+    source: str,
+    hour: datetime,
+) -> PartitionRecord:
+    """Write an explicit zero-row hour without manufacturing market events."""
+    if kind not in _COLUMNS:
+        raise ValueError(f"unknown partition kind: {kind}")
+    if not source or not product_id:
+        raise ValueError("empty partition source and product_id are required")
+    if (
+        hour.tzinfo is None
+        or hour.utcoffset() != timezone.utc.utcoffset(hour)
+        or hour != hour.replace(minute=0, second=0, microsecond=0)
+    ):
+        raise ValueError("empty partition hour must be aligned UTC")
+    arrays = [
+        pa.array([], type=_EMPTY_TYPES[kind].get(name, pa.string()))
+        for name in _COLUMNS[kind]
+    ]
+    table = pa.Table.from_arrays(arrays, names=_COLUMNS[kind])
+    return _persist_partition(table, root, kind, product_id, source, hour)

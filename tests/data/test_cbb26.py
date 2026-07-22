@@ -280,7 +280,34 @@ def test_restore_runs_pg_restore_inside_compose_with_import_path(tmp_path: Path)
 
 def test_compose_mount_matches_required_cbb26_cache_root():
     compose = (Path(__file__).resolve().parents[2] / "docker-compose.data.yaml").read_text()
-    assert "./data/coinbase_history/cache/cbb26:/imports:ro" in compose
+    assert "${BTCSPIKER_CBB26_CACHE_ROOT:-./data/coinbase_history/cache/cbb26}:/imports:ro" in compose
+
+
+def test_restore_passes_explicit_compose_environment(tmp_path: Path):
+    dump = tmp_path / "c1e89eded9915e1c75a18911298edfbbbe4050ce" / "2026-04-24" / "BTC-USD.dump"
+    dump.parent.mkdir(parents=True)
+    dump.write_bytes(b"dump")
+    observed_environments = []
+
+    class Cursor:
+        values = iter([1, 1, 1, 1, 1, 0, 0, 0, 0])
+        def execute(self, *_): pass
+        def fetchone(self): return (next(self.values),)
+    class Connection:
+        def cursor(self): return Cursor()
+        def commit(self): pass
+
+    restore_shard(
+        _shard(), dump, _sidecar(), Connection(), cache_root=tmp_path,
+        run=lambda _command, **kwargs: observed_environments.append(kwargs.get("env")) or type("R", (), {"returncode": 0, "stderr": ""})(),
+        disk_usage=lambda _: (0, 0, 2**33),
+        compose_environment={"BTCSPIKER_CBB26_CACHE_ROOT": str(tmp_path)},
+    )
+
+    assert observed_environments == [
+        {"BTCSPIKER_CBB26_CACHE_ROOT": str(tmp_path)},
+        {"BTCSPIKER_CBB26_CACHE_ROOT": str(tmp_path)},
+    ]
 
 
 def test_restore_nonzero_pg_restore_raises_without_commit(tmp_path: Path):

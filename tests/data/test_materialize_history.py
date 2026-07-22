@@ -77,6 +77,25 @@ def test_join_never_crosses_segments_and_returns_tick_contract():
     assert tuple(joined.columns) == MODEL_TICK_COLUMNS
 
 
+def test_join_infers_segment_only_from_exact_prior_book_second():
+    from tests.data.conftest import DAY_START
+    gap_trade = _trade(DAY_START + timedelta(seconds=50), "gap")
+    after_gap_trade = _trade(DAY_START + timedelta(seconds=101), "after-gap")
+    gap_trade.pop("segment_id")
+    after_gap_trade.pop("segment_id")
+
+    joined = join_trades_to_books(
+        [gap_trade, after_gap_trade],
+        [
+            _book(DAY_START, segment_id=0),
+            _book(DAY_START + timedelta(seconds=100), segment_id=1),
+        ],
+    )
+
+    assert joined["trade_id"].tolist() == ["after-gap"]
+    assert joined["segment_id"].tolist() == [1]
+
+
 def test_materializes_each_feature_set_without_crossing_segment_boundaries():
     from tests.data.conftest import DAY_START
 
