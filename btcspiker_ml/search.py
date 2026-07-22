@@ -183,9 +183,12 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
                         extra_tags={"skip_reason": record.get("skip_reason", "trial skipped")},
                     )
                 elif outcome == "finished":
+                    metrics = dict(record.get("metrics", {}))
+                    eligible = _selection_eligible(metrics, values.get("max_development_brier_ratio"))
+                    tracker.log_tags({"selection_eligible": eligible})
                     tracker.end_run("FINISHED")
-                    score = record.get("metrics", {}).get("aggregate_pr_auc")
-                    if score is not None and float(score) > state.best_scores.get(stage, float("-inf")):
+                    score = metrics.get("aggregate_pr_auc")
+                    if score is not None and eligible and float(score) > state.best_scores.get(stage, float("-inf")):
                         state.best_run_ids[stage] = child_id
                         state.best_scores[stage] = float(score)
                     if score is not None:
@@ -218,6 +221,19 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
     finally:
         state.remaining_wall_clock_seconds = max(0.0, state.remaining_wall_clock_seconds - (time.monotonic() - started))
         state.save(state_path)
+
+
+def _selection_eligible(metrics: Mapping[str, Any], max_development_brier_ratio: Any) -> bool:
+    """Refuse a stage win to a trial that already fails qualification's calibration bar.
+
+    Ranking quality alone used to decide the winner, so a confident but poorly
+    calibrated candidate could take the stage and then lose qualification on
+    Brier — after the sealed holdout had already been spent.
+    """
+    if max_development_brier_ratio is None:
+        return True
+    ratio = metrics.get("development_brier_ratio")
+    return ratio is None or float(ratio) <= float(max_development_brier_ratio)
 
 
 def _lineage(

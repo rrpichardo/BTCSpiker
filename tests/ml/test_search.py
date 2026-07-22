@@ -187,3 +187,40 @@ def test_neural_stage_requires_measured_boosted_tree_plateau(tmp_path: Path):
 
     assert result.status == "skipped"
     assert "boosted-tree plateau" in result.skipped_reason
+
+
+def test_miscalibrated_trial_does_not_win_despite_a_higher_ranking_score(
+    tmp_path: Path,
+):
+    config = _config(tmp_path)
+    config.update(
+        max_development_brier_ratio=1.05,
+        trials=[
+            {
+                "id": "calibrated",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.20,
+                    "development_brier_ratio": 0.98,
+                },
+            },
+            {
+                "id": "miscalibrated",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.40,
+                    "development_brier_ratio": 1.83,
+                },
+            },
+        ],
+    )
+
+    run_stage(config, "d1", "core_v1", "linear")
+    state = SearchState.load(tmp_path / "state" / "search-1.json")
+
+    # The miscalibrated trial ranks higher (0.40) but is disqualified, so the
+    # calibrated trial holds the stage win.
+    assert state.best_scores["linear"] == pytest.approx(0.20)
+    assert state.stage_score_history["linear"] == [0.20, 0.40]
