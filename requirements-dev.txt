@@ -2,3 +2,7 @@ pytest
 pytest-retry
 confluent-kafka
 requests
+huggingface-hub>=0.34,<2
+hf-xet>=1.1,<2
+psycopg[binary]>=3.2,<4
+pyarrow>=14,<22

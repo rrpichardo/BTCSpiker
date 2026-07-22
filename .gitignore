@@ -13,7 +13,10 @@ __pycache__/
 .DS_Store
 
 # Data (too large for git)
-data/
+/data/
+
+# Local subagent progress ledger
+/.superpowers/
 
 # MLflow local runs
 mlruns/
