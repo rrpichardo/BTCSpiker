@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import mlflow
 import numpy as np
+import pytest
 import pandas as pd
 import yaml
 from sklearn.dummy import DummyClassifier
@@ -19,14 +20,22 @@ from scripts.run_experiments import (
 )
 
 
-def _write_config(tmp_path: Path, *, linear_trials: int = 4) -> tuple[Path, dict]:
+def _write_config(
+    tmp_path: Path, *, linear_trials: int = 4, drifting_prevalence: bool = False
+) -> tuple[Path, dict]:
     dataset = tmp_path / "features.parquet"
     rows = 1_600
     rng = np.random.default_rng(42)
+    if drifting_prevalence:
+        # Real corpora do not hold a constant event rate across folds; a uniform
+        # target hides reference errors that only appear when prevalence moves.
+        target = rng.binomial(1, np.linspace(0.15, 0.55, rows))
+    else:
+        target = np.arange(rows) % 2
     frame = pd.DataFrame(
         {
             "timestamp": pd.date_range("2026-01-01", periods=rows, freq="s", tz="UTC"),
-            "vol_spike": np.arange(rows) % 2,
+            "vol_spike": target,
             "future_vol_60s": rng.random(rows),
             "log_return": rng.normal(size=rows),
             "spread_bps": rng.random(rows),
@@ -298,6 +307,17 @@ def test_development_trials_report_calibration_against_the_prevalence_baseline(
     metrics = trial["evaluate"]()["metrics"]
 
     assert metrics["development_brier_ratio"] > 0.0
+
+
+def test_prevalence_baseline_scores_a_neutral_calibration_ratio(tmp_path: Path):
+    """The baseline is the reference, so it must measure as neither better nor worse."""
+    path, raw = _write_config(tmp_path, linear_trials=1, drifting_prevalence=True)
+    config = load_experiment_config(path)
+    trial = build_stage_trials(config, raw, "baseline")[0]
+
+    metrics = trial["evaluate"]()["metrics"]
+
+    assert metrics["development_brier_ratio"] == pytest.approx(1.0, abs=0.01)
 
 
 def test_development_trials_report_how_many_folds_beat_prevalence(tmp_path: Path):

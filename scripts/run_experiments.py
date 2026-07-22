@@ -268,6 +268,8 @@ def _evaluate_development_trial(
     fold_metrics: dict[str, float] = {}
     scores: list[float] = []
     folds_won = 0
+    candidate_brier_total = 0.0
+    baseline_brier_total = 0.0
     fit_seconds = 0.0
     inference_seconds = 0.0
     per_row_latency_ms: list[float] = []
@@ -295,6 +297,13 @@ def _evaluate_development_trial(
         # A prevalence-constant predictor scores PR-AUC == prevalence, so this
         # counts the folds that actually beat the baseline qualification uses.
         folds_won += int(metric.pr_auc > metric.prevalence)
+        # The baseline refits per fold and predicts that fold's training
+        # prevalence, so the comparison has to move with it.  Scoring against a
+        # single pooled constant instead measures prevalence drift, which
+        # penalises every model equally — including the baseline itself.
+        fold_baseline = np.full(len(validation), float(target[train].mean()))
+        candidate_brier_total += brier_score_loss(target[validation], prediction) * len(validation)
+        baseline_brier_total += brier_score_loss(target[validation], fold_baseline) * len(validation)
         oof_parts.append(pd.DataFrame({
             "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
             "target": target[validation], "prediction": prediction, "fold": fold_number,
@@ -307,10 +316,9 @@ def _evaluate_development_trial(
 
     oof = pd.concat(oof_parts, ignore_index=True).sort_values("row_index")
     tau = _best_threshold(oof["target"].to_numpy(), oof["prediction"].to_numpy())
-    development_brier_ratio = _brier_ratio_against_prevalence(
-        oof["target"].to_numpy(), oof["prediction"].to_numpy(),
-        prevalence=float(target[sorted(development_rows)].mean()),
-    )
+    if baseline_brier_total <= 0.0:
+        raise ValueError("prevalence baseline has no Brier score to compare against")
+    development_brier_ratio = float(candidate_brier_total / baseline_brier_total)
     fitted = _candidate_model(spec, config)
     development = np.asarray(sorted(development_rows), dtype=int)
     before_refit = time.perf_counter()
@@ -369,16 +377,6 @@ def _evaluate_development_trial(
             "regime_table": {"all_development": {"rows": len(oof), "positive_events": int(oof["target"].sum())}},
         },
     }
-
-
-def _brier_ratio_against_prevalence(
-    target: np.ndarray, prediction: np.ndarray, *, prevalence: float,
-) -> float:
-    """Score calibration the way qualification will: candidate Brier / baseline Brier."""
-    baseline = brier_score_loss(target, np.full(len(target), prevalence))
-    if baseline <= 0.0:
-        raise ValueError("prevalence baseline has no Brier score to compare against")
-    return float(brier_score_loss(target, prediction) / baseline)
 
 
 def _best_threshold(target: np.ndarray, prediction: np.ndarray) -> float:
