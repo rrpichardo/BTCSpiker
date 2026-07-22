@@ -303,6 +303,13 @@ curl -s http://localhost:3001/api/predictions/recent | jq '{count}'
 curl -s "http://localhost:9090/api/v1/query?query=sum(predict_requests_total)" | jq .
 ```
 
+**Caution — `scripts/replay.py --out` silently overwrites the corpus.** When
+`--out` is omitted, it defaults to `config.yaml`'s `data.features_file`
+(`data/processed/features.parquet`) and overwrites whatever is there without
+confirmation — this is what truncated this repo's corpus copy in the past.
+Always pass an explicit `--out` for one-off replay runs, and never point it at
+a corpus you're relying on for ML tournament work.
+
 **Regenerate drift report:**
 
 ```bash
@@ -334,11 +341,26 @@ export BTCSPIKER_EXISTING_DATA="$PWD/data/processed/features.parquet"
 export BTCSPIKER_ARTIFACT_ROOT="$PWD/.artifacts/btcspiker"
 ```
 
-`BTCSPIKER_EXISTING_DATA` takes precedence when binding the corpus.
-`experiment.yaml` is the current source of truth for `storage.artifact_root`;
-set its `storage.artifact_root` to the same value as
-`BTCSPIKER_ARTIFACT_ROOT` before running scripts if you choose another local
-artifact root. Bind and profile the exact corpus before starting a search:
+`BTCSPIKER_EXISTING_DATA` is first in the resolution order and **must be an
+absolute path to the real corpus**. Setting it is not optional: without it,
+`bind_existing_dataset.py` silently falls through to the tiny
+`handoff/data_sample/` sample — bind and profile both *succeed* against a
+zero-positive, few-minute slice, and the failure only surfaces later as an
+opaque `IndexError`. Always hard-verify the `bind` output before trusting it:
+the printed `source:` must end in the corpus file you meant to use, `rows:`
+must match your expectation, and `duration:` must read in hours or days, not
+minutes.
+
+**Freeze `HEAD` for the full run.** The tournament's resume contract pins a
+`git_sha` at bind time; any commit that lands on the checked-out branch
+between stages breaks `--resume` on the next stage. Run from a **detached
+worktree** pinned to a commit that will not move (`git worktree add <path>
+--detach <ref>`), and disable any auto-commit hook for the duration (e.g. the
+`remember` plugin's git-backup hook, via its `cooldowns.git_backup_seconds`
+setting) — otherwise a background commit mid-tournament is the most likely
+cause of an unnecessary debugging session.
+
+Bind and profile the exact corpus before starting a search:
 
 ```bash
 python scripts/bind_existing_dataset.py --config experiment.yaml
@@ -370,11 +392,11 @@ edit it to open the final holdout. The holdout stays sealed through development
 and can be opened once by `scripts/qualify_candidate.py` only after the required
 development stages complete.
 
-Qualification requires a completed candidate run plus an evidence JSON produced
-by the evaluation workflow:
+Qualification takes only the run id — it derives all evidence itself from the
+sealed search state and MLflow run, and refuses caller-authored metrics:
 
 ```bash
-python scripts/qualify_candidate.py "$RUN_ID" "$EVIDENCE_JSON" \
+python scripts/qualify_candidate.py "$RUN_ID" \
   --search-state ".experiment-state/$SEARCH_ID.json" \
   --tracking-uri "file:$BTCSPIKER_ARTIFACT_ROOT/mlruns" \
   --artifact-root "$BTCSPIKER_ARTIFACT_ROOT"
@@ -388,6 +410,52 @@ curl -s http://localhost:5001/api/2.0/mlflow/registered-models/search | jq .
 curl -s http://localhost:8000/version | jq '{model,stage,source,run_id}'
 # Confirm the candidate is Staging if qualified; confirm Production is unchanged.
 ```
+
+### Provisional publish to staging
+
+If the run has real gate failures beyond `coverage_under_thirty_days` (e.g. a
+rehearsal on a corpus that is not yet 30+ days), publish it as
+research-only/provisional evidence rather than promoting it:
+
+```bash
+docker compose --profile candidate run --rm candidate-publish \
+  --source-store-root /app/<local mlflow store root, e.g. .artifacts/btcspiker/mlruns> \
+  --source-run-id "$RUN_ID" \
+  --qualification-json /app/<artifact root>/qualifications/run_id=$RUN_ID/qualification.json \
+  --target-tracking-uri http://mlflow:5000 \
+  --model-name btc-volatility-candidate --stage Staging \
+  --expect-feature-set-id core_v1 --expect-feature-schema-version 1 \
+  --provisional
+
+MODEL_NAME=btc-volatility-candidate MODEL_STAGE=Staging \
+  docker compose up -d --build api predict-bridge
+
+curl -s localhost:8000/version | jq '{model,stage,source,run_id}'
+# → btc-volatility-candidate / Staging / mlflow with a matching run_id
+```
+
+Validate the serving path (not just the model), then watch live grading on
+the Performance tab — outcomes are delayed by the label horizon (60s), so
+expect ~1 minute of lag before anything grades:
+
+```bash
+curl -s "http://localhost:9090/api/v1/query?query=predict_latency_seconds_bucket" | jq .
+curl -s 'http://localhost:8090/predictions/performance?window_minutes=30' | jq .
+```
+
+**Rollback drill — run it, don't assume it works:**
+
+```bash
+MODEL_VARIANT=baseline docker compose up -d api    # skips model loading entirely
+curl -s http://localhost:8000/version | jq .
+docker compose up -d api                            # back to legacy Production
+curl -s http://localhost:8000/version | jq .
+```
+
+`TAU` is loaded and asserted at API startup but never applied in scoring —
+`/predict` returns raw probabilities. The Performance tab applies its own
+threshold, so grading stays meaningful; don't read API scores directly as
+alerts.
 
 Export a selected run only after its qualification result is final; exports are
 immutable and written below `$BTCSPIKER_ARTIFACT_ROOT/mlflow-exports/`:
