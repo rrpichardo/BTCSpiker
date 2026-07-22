@@ -37,6 +37,20 @@ def test_manifest_rejects_non_research_usage_scope():
         RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
 
 
+def test_trade_completion_evidence_is_part_of_deterministic_identity():
+    values = _manifest_values()
+    left = RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
+    right = RawDatasetManifest(
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values,
+        trade_day_completions=[{
+            "product_id": "BTC-USD", "source_date": "2026-01-01",
+            "day_start_epoch": 1767225600, "day_end_epoch": 1767312000,
+            "trade_pages_complete": True,
+        }],
+    )
+    assert raw_manifest_id(left) != raw_manifest_id(right)
+
+
 def test_same_identity_different_creation_times_publish_distinct_immutable_bytes():
     from hashlib import sha256
 

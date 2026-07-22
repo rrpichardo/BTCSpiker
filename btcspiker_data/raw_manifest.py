@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +23,9 @@ class RawDatasetManifest:
     sequence_incidents: list[dict[str, Any]]
     excluded_intervals: list[dict[str, Any]]
     created_at: datetime
+    # Completion evidence is deliberately part of the identity: a successful
+    # L2 download alone must never qualify a UTC day.
+    trade_day_completions: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.usage_scope != "research_unverified":
