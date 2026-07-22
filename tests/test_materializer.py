@@ -1033,7 +1033,8 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
     # Build a DB with the OLD predictions schema (no feature_id/stream_epoch/
     # tau/run_id) to exercise the ALTER TABLE migration path.
     raw = sqlite3.connect(str(db_path))
-    raw.execute("""
+    raw.execute(
+        """
         CREATE TABLE predictions (
             event_id TEXT PRIMARY KEY,
             source_partition INT,
@@ -1048,7 +1049,8 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
             log_return REAL,
             trade_intensity_60s REAL
         )
-        """)
+        """
+    )
     raw.execute(
         "INSERT INTO predictions (event_id, source_partition, source_offset, "
         "feature_ts, api_ts, model_variant, model_version, score, vol_60s, "
