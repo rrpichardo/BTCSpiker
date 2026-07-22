@@ -24,6 +24,10 @@ class RawDatasetManifest:
     excluded_intervals: list[dict[str, Any]]
     created_at: datetime
 
+    def __post_init__(self) -> None:
+        if self.usage_scope != "research_unverified":
+            raise ValueError("usage_scope must be research_unverified")
+
     def identity_payload(self) -> dict[str, Any]:
         value = asdict(self)
         value.pop("created_at")

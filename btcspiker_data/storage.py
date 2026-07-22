@@ -24,7 +24,11 @@ class PartitionRecord:
 
 _COLUMNS = {"trades": RAW_TRADE_COLUMNS, "book_deltas": RAW_BOOK_COLUMNS, "book_states": RAW_BOOK_COLUMNS}
 _TIME_COLUMN = {"trades": "event_time", "book_deltas": "observed_through", "book_states": "observed_through"}
-_KEY_COLUMNS = {"trades": ("trade_id",), "book_deltas": ("sequence_start", "sequence_end"), "book_states": ("sequence_start", "sequence_end")}
+_KEY_COLUMNS = {
+    "trades": ("trade_id",),
+    "book_deltas": ("observed_through",),
+    "book_states": ("observed_through",),
+}
 
 
 def _sha256(path: Path) -> str:
