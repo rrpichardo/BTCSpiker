@@ -145,7 +145,7 @@ from decimal import Decimal
 
 RAW_BOOK_COLUMNS = (
     "source", "product_id", "observed_through", "sequence_start",
-    "sequence_end", "best_bid", "bid_size", "best_ask", "ask_size",
+    "sequence_end", "best_bid", "bid_size", "best_ask", "ask_size", "segment_id",
     "changes_json", "source_revision", "source_date",
 )
 RAW_TRADE_COLUMNS = (

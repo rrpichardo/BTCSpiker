@@ -16,6 +16,7 @@ RAW_BOOK_COLUMNS = (
     "bid_size",
     "best_ask",
     "ask_size",
+    "segment_id",
     "changes_json",
     "source_revision",
     "source_date",

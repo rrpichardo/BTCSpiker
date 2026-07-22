@@ -93,6 +93,7 @@ def test_quality_incident_requires_utc_ordered_window():
 def test_ordered_schema_contracts_are_unique_and_feature_complete():
     for columns in (RAW_BOOK_COLUMNS, RAW_TRADE_COLUMNS, MODEL_TICK_COLUMNS):
         assert len(columns) == len(set(columns))
+    assert "segment_id" in RAW_BOOK_COLUMNS
     assert {"bid_size", "ask_size", "book_observed_through", "segment_id"}.issubset(
         MODEL_TICK_COLUMNS
     )
