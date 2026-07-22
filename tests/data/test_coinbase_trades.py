@@ -4,6 +4,7 @@ import pytest
 
 from btcspiker_data.coinbase_trades import (
     CoinbaseTradeClient,
+    TradeDayCompletion,
     TradePageStalledError,
     iter_day_trades,
 )
@@ -46,6 +47,19 @@ def trade(trade_id, second, side="SELL"):
     }
 
 
+class ManualClock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 @pytest.fixture
 def fake_trade_session():
     return TradeSession(
@@ -60,7 +74,6 @@ def fake_trade_session():
 def stalled_trade_session():
     return TradeSession(
         [
-            Response(200, {"trades": [trade("100", DAY_END - 1)]}),
             Response(200, {"trades": [trade("100", DAY_END - 1)]}),
             Response(200, {"trades": [trade("100", DAY_END - 1)]}),
         ]
@@ -81,6 +94,37 @@ def test_backfill_deduplicates_inclusive_end_overlap(fake_trade_session):
 def test_backfill_rejects_page_that_cannot_advance(stalled_trade_session):
     with pytest.raises(TradePageStalledError):
         list(client(stalled_trade_session).iter_day_trades(DAY))
+    assert len(stalled_trade_session.calls) == 2
+
+
+def test_empty_pages_require_two_consecutive_pages_before_stall():
+    session = TradeSession(
+        [
+            Response(200, {"trades": []}),
+            Response(200, {"trades": []}),
+        ]
+    )
+
+    with pytest.raises(TradePageStalledError, match="no new trade IDs"):
+        list(client(session).iter_day_trades(DAY))
+
+    assert len(session.calls) == 2
+
+
+def test_completion_evidence_exists_only_after_success(fake_trade_session, stalled_trade_session):
+    successful = client(fake_trade_session)
+    list(successful.iter_day_trades(DAY))
+    assert successful.last_completion == TradeDayCompletion(
+        product_id="BTC-USD",
+        source_date=DAY,
+        day_start_epoch=DAY_START,
+        day_end_epoch=DAY_END,
+    )
+
+    stalled = client(stalled_trade_session)
+    with pytest.raises(TradePageStalledError):
+        list(stalled.iter_day_trades(DAY))
+    assert stalled.last_completion is None
 
 
 def test_response_bbo_is_not_copied_into_trade_events(fake_trade_session):
@@ -113,3 +157,43 @@ def test_retries_retryable_status_with_retry_after_before_success():
 def test_module_iterator_delegates_to_the_public_client(fake_trade_session):
     trades = list(iter_day_trades(DAY, session=fake_trade_session, sleep=lambda _: None))
     assert [trade.trade_id for trade in trades] == ["97", "98", "99", "100"]
+
+
+def test_ninth_immediate_request_waits_for_token_refill():
+    page_seconds = [DAY_END - index * 100 for index in range(1, 9)] + [DAY_START]
+    session = TradeSession(
+        [Response(200, {"trades": [trade(str(index), second)]})
+         for index, second in enumerate(page_seconds)]
+    )
+    clock = ManualClock()
+    trade_client = CoinbaseTradeClient(
+        session=session,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    list(trade_client.iter_day_trades(DAY))
+
+    assert len(session.calls) == 9
+    assert clock.sleeps == [0.125]
+
+
+def test_configured_product_controls_request_endpoint():
+    session = TradeSession(
+        [Response(200, {"trades": [trade("eth-1", DAY_START)]})]
+    )
+    list(CoinbaseTradeClient(session=session, product_id="ETH-USD").iter_day_trades(DAY))
+    assert session.calls[0][0].endswith("/products/ETH-USD/ticker")
+
+
+def test_trade_inside_day_start_epoch_second_completes_day():
+    first_second = DAY_START + 0.5
+    session = TradeSession(
+        [Response(200, {"trades": [trade("first", first_second)]})]
+    )
+    trade_client = client(session)
+
+    trades = list(trade_client.iter_day_trades(DAY))
+
+    assert trades[0].event_time.microsecond == 500_000
+    assert trade_client.last_completion is not None
