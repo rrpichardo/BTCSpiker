@@ -154,6 +154,35 @@ services:
         delay: 5s
     restart: on-failure
 
+  # ---- One-shot: bridge a qualified tournament candidate into this server's
+  # registry (see scripts/publish_candidate_to_registry.py). Opt-in only —
+  # never runs on `up`; invoke explicitly with
+  #   docker compose --profile candidate run --rm candidate-publish <args>
+  candidate-publish:
+    profiles: ["candidate"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      # MLflow's file-based artifact store writes directly to the artifact
+      # URI on the client's own filesystem, so the target-side run this
+      # script creates must share the same volume the `mlflow` and `api`
+      # services read from — required, not optional.
+      - mlflow-data:/mlruns
+      - ./scripts:/app/scripts:ro
+      - ./.artifacts:/app/.artifacts:ro
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    entrypoint: ["python", "scripts/publish_candidate_to_registry.py"]
+
   # ---- FastAPI prediction service ----
   api:
     build:
