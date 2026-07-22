@@ -42,7 +42,7 @@ class FakeApi:
     def upload_file(self, **kwargs):
         self.uploads += 1
         self.calls.append(("upload_file", kwargs))
-        return type("Commit", (), {"oid": "commit-1"})()
+        return type("Commit", (), {"oid": "d" * 40})()
 
     def get_paths_info(self, **kwargs):
         return [type("PathInfo", (), {"lfs": type("Lfs", (), {"sha256": self.digest})()})()]
@@ -120,7 +120,7 @@ def test_upload_verifies_exact_commit_digest(tmp_path):
     part = _partition(tmp_path)
     api = FakeApi(digest=part.sha256)
     receipt = PrivateHubStore.connect(api_factory=lambda: api).upload_partition(part, _remote_path(part))
-    assert receipt.revision == "commit-1"
+    assert receipt.revision == "d" * 40
     assert receipt.sha256 == part.sha256
     assert api.uploads == 1
 
@@ -153,7 +153,7 @@ def test_upload_fallback_downloads_and_hashes_exact_committed_revision(tmp_path)
         "repo_id": "alice/btcspiker-coinbase-history",
         "filename": remote_path,
         "repo_type": "dataset",
-        "revision": "commit-1",
+        "revision": "d" * 40,
     }]
 
 
@@ -233,3 +233,31 @@ def test_partition_rejects_noncanonical_remote_path(tmp_path):
     with pytest.raises(ValueError, match="layout"):
         PrivateHubStore.connect(api_factory=lambda: api).upload_partition(part, "raw/part.parquet")
     assert api.uploads == 0
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        type("SymbolicCommit", (), {"oid": "main"})(),
+        type("UrlOnlyCommit", (), {"oid": None, "commit_url": f"https://huggingface.test/commit/{'e' * 40}"})(),
+    ],
+)
+def test_fresh_upload_rejects_non_sha_oid_before_verification(tmp_path, commit):
+    part = _partition(tmp_path)
+
+    class InvalidCommitApi(FakeApi):
+        def __init__(self):
+            super().__init__(digest=part.sha256)
+            self.verified = False
+        def upload_file(self, **kwargs):
+            self.uploads += 1
+            return commit
+        def get_paths_info(self, **kwargs):
+            self.verified = True
+            return super().get_paths_info(**kwargs)
+
+    api = InvalidCommitApi()
+    with pytest.raises(RuntimeError, match="exact commit SHA"):
+        PrivateHubStore.connect(api_factory=lambda: api).upload_partition(part, _remote_path(part))
+    assert api.uploads == 1
+    assert api.verified is False

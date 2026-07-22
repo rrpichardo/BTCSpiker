@@ -76,11 +76,17 @@ class PrivateHubStore:
         return info
 
     @staticmethod
-    def _existing_revision(info: Any) -> str:
-        revision = getattr(info, "sha", None)
+    def _exact_revision(revision: Any, error_message: str) -> str:
         if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision) is None:
-            raise RuntimeError("existing remote file has no exact commit SHA")
+            raise RuntimeError(error_message)
         return revision
+
+    @classmethod
+    def _existing_revision(cls, info: Any) -> str:
+        return cls._exact_revision(
+            getattr(info, "sha", None),
+            "existing remote file has no exact commit SHA",
+        )
 
     @staticmethod
     def _validate_partition_path(remote_path: str, expected_sha256: str) -> None:
@@ -112,7 +118,7 @@ class PrivateHubStore:
             downloaded = Path(self._api.hf_hub_download(repo_id=self.repo_id, filename=remote_path, repo_type="dataset", revision=revision))
             remote_digest = _file_sha256(downloaded)
         if remote_digest != expected:
-            raise ValueError("remote checksum does not match local partition")
+            raise ValueError("uploaded content checksum does not match expected content")
 
     def upload_partition(self, partition: PartitionRecord, remote_path: str) -> UploadReceipt:
         info = self._assert_destination()
@@ -124,9 +130,10 @@ class PrivateHubStore:
             self._verify(remote_path, revision, partition.sha256)
             return UploadReceipt(self.repo_id, revision, remote_path, partition.sha256, partition.size_bytes)
         commit = self._api.upload_file(path_or_fileobj=str(partition.path), path_in_repo=remote_path, repo_id=self.repo_id, repo_type="dataset")
-        revision = getattr(commit, "oid", None) or getattr(commit, "commit_url", "").rstrip("/").split("/").pop()
-        if not revision:
-            raise RuntimeError("upload did not return a committed revision")
+        revision = self._exact_revision(
+            getattr(commit, "oid", None),
+            "upload did not return an exact commit SHA",
+        )
         self._verify(remote_path, revision, partition.sha256)
         return UploadReceipt(self.repo_id, revision, remote_path, partition.sha256, partition.size_bytes)
 
@@ -140,8 +147,9 @@ class PrivateHubStore:
             self._verify(remote_path, revision, digest)
             return UploadReceipt(self.repo_id, revision, remote_path, digest, len(content))
         commit = self._api.upload_file(path_or_fileobj=io.BytesIO(content), path_in_repo=remote_path, repo_id=self.repo_id, repo_type="dataset")
-        revision = getattr(commit, "oid", None)
-        if not revision:
-            raise RuntimeError("upload did not return a committed revision")
+        revision = self._exact_revision(
+            getattr(commit, "oid", None),
+            "upload did not return an exact commit SHA",
+        )
         self._verify(remote_path, revision, digest)
         return UploadReceipt(self.repo_id, revision, remote_path, digest, len(content))
