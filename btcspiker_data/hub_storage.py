@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,14 +59,45 @@ class PrivateHubStore:
         except repository_not_found_exceptions:
             api.create_repo(repo_id=repo_id, repo_type="dataset", private=True, exist_ok=True)
         store = cls(api, repo_id)
-        store._assert_private()
+        store._assert_destination()
         return store
 
-    def _assert_private(self) -> Any:
+    def _assert_destination(self) -> Any:
+        identity = self._api.whoami()
+        name = identity.get("name") if isinstance(identity, dict) else getattr(identity, "name", None)
+        if not name:
+            raise RuntimeError("Hugging Face authentication is required")
+        expected_repo_id = f"{name}/btcspiker-coinbase-history"
+        if self.repo_id != expected_repo_id:
+            raise ValueError("Hub destination must use the authenticated namespace")
         info = self._api.repo_info(repo_id=self.repo_id, repo_type="dataset")
         if not getattr(info, "private", False):
             raise ValueError("Hub destination must be private")
         return info
+
+    @staticmethod
+    def _existing_revision(info: Any) -> str:
+        revision = getattr(info, "sha", None)
+        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision) is None:
+            raise RuntimeError("existing remote file has no exact commit SHA")
+        return revision
+
+    @staticmethod
+    def _validate_partition_path(remote_path: str, expected_sha256: str) -> None:
+        match = re.fullmatch(
+            r"raw/kind=(book_deltas|book_states|trades)/source=([^/]+)/"
+            r"product=BTC-USD/date=(\d{4}-\d{2}-\d{2})/hour=(\d{2})/"
+            r"part-([0-9a-f]{64})\.parquet",
+            remote_path,
+        )
+        if match is None:
+            raise ValueError("remote partition path does not match the required layout")
+        try:
+            date.fromisoformat(match.group(3))
+        except ValueError as error:
+            raise ValueError("remote partition path does not match the required layout") from error
+        if int(match.group(4)) > 23 or match.group(5) != expected_sha256:
+            raise ValueError("remote partition path does not match the required layout")
 
     def _verify(self, remote_path: str, revision: str, expected: str) -> None:
         try:
@@ -82,13 +115,12 @@ class PrivateHubStore:
             raise ValueError("remote checksum does not match local partition")
 
     def upload_partition(self, partition: PartitionRecord, remote_path: str) -> UploadReceipt:
-        info = self._assert_private()
-        if not remote_path.startswith("raw/"):
-            raise ValueError("remote partition path must be under raw/")
+        info = self._assert_destination()
+        self._validate_partition_path(remote_path, partition.sha256)
         if _file_sha256(partition.path) != partition.sha256:
             raise ValueError("local partition checksum does not match its record")
         if self._api.file_exists(repo_id=self.repo_id, filename=remote_path, repo_type="dataset"):
-            revision = getattr(info, "sha", None) or "main"
+            revision = self._existing_revision(info)
             self._verify(remote_path, revision, partition.sha256)
             return UploadReceipt(self.repo_id, revision, remote_path, partition.sha256, partition.size_bytes)
         commit = self._api.upload_file(path_or_fileobj=str(partition.path), path_in_repo=remote_path, repo_id=self.repo_id, repo_type="dataset")
@@ -101,8 +133,12 @@ class PrivateHubStore:
     def upload_bytes(self, remote_path: str, content: bytes) -> UploadReceipt:
         """Upload manifest bytes; manifests are verified by their SHA-256."""
         import io
-        self._assert_private()
+        info = self._assert_destination()
         digest = hashlib.sha256(content).hexdigest()
+        if self._api.file_exists(repo_id=self.repo_id, filename=remote_path, repo_type="dataset"):
+            revision = self._existing_revision(info)
+            self._verify(remote_path, revision, digest)
+            return UploadReceipt(self.repo_id, revision, remote_path, digest, len(content))
         commit = self._api.upload_file(path_or_fileobj=io.BytesIO(content), path_in_repo=remote_path, repo_id=self.repo_id, repo_type="dataset")
         revision = getattr(commit, "oid", None)
         if not revision:

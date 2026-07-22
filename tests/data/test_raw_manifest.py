@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from btcspiker_data.raw_manifest import RawDatasetManifest, raw_manifest_id
+from btcspiker_data.hub_storage import PrivateHubStore
+from btcspiker_data.raw_manifest import RawDatasetManifest, publish_raw_manifest, raw_manifest_id
 
 
 def _manifest_values():
@@ -34,3 +35,113 @@ def test_manifest_rejects_non_research_usage_scope():
     values["usage_scope"] = "production"
     with pytest.raises(ValueError, match="research_unverified"):
         RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
+
+
+def test_same_identity_different_creation_times_publish_distinct_immutable_bytes():
+    from hashlib import sha256
+
+    class Info:
+        private = True
+        sha = None
+
+    class MemoryApi:
+        def __init__(self):
+            self.info = Info()
+            self.files = {}
+            self.uploads = 0
+        def whoami(self):
+            return {"name": "alice"}
+        def repo_info(self, **kwargs):
+            return self.info
+        def file_exists(self, *, filename, **kwargs):
+            return filename in self.files
+        def upload_file(self, *, path_or_fileobj, path_in_repo, **kwargs):
+            content = path_or_fileobj.getvalue()
+            self.files[path_in_repo] = content
+            self.uploads += 1
+            self.info.sha = f"{self.uploads:040x}"
+            return type("Commit", (), {"oid": self.info.sha})()
+        def get_paths_info(self, *, paths, **kwargs):
+            digest = sha256(self.files[paths[0]]).hexdigest()
+            lfs = type("Lfs", (), {"sha256": digest})()
+            return [type("PathInfo", (), {"lfs": lfs})()]
+
+    values = _manifest_values()
+    first = RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
+    second = RawDatasetManifest(created_at=datetime(2026, 1, 2, tzinfo=timezone.utc), **values)
+    api = MemoryApi()
+    store = PrivateHubStore.connect(api_factory=lambda: api)
+    first_receipt = publish_raw_manifest(first, store)
+    second_receipt = publish_raw_manifest(second, store)
+
+    assert raw_manifest_id(first) == raw_manifest_id(second)
+    assert first_receipt.remote_path != second_receipt.remote_path
+    assert first_receipt.sha256 != second_receipt.sha256
+    assert api.files[first_receipt.remote_path] != api.files[second_receipt.remote_path]
+    assert api.uploads == 2
+
+
+def test_upload_bytes_reuses_matching_existing_content_at_pinned_commit():
+    from hashlib import sha256
+
+    content = b'{"created_at":"2026-01-01T00:00:00+00:00"}'
+    remote_path = f"manifests/id/manifest-{sha256(content).hexdigest()}.json"
+
+    class Info:
+        private = True
+        sha = "b" * 40
+
+    class ExistingApi:
+        def __init__(self):
+            self.info = Info()
+            self.uploads = 0
+        def whoami(self):
+            return {"name": "alice"}
+        def repo_info(self, **kwargs):
+            return self.info
+        def file_exists(self, **kwargs):
+            return True
+        def upload_file(self, **kwargs):
+            self.uploads += 1
+        def get_paths_info(self, **kwargs):
+            lfs = type("Lfs", (), {"sha256": sha256(content).hexdigest()})()
+            return [type("PathInfo", (), {"lfs": lfs})()]
+
+    api = ExistingApi()
+    receipt = PrivateHubStore.connect(api_factory=lambda: api).upload_bytes(remote_path, content)
+    assert receipt.revision == "b" * 40
+    assert receipt.sha256 == sha256(content).hexdigest()
+    assert api.uploads == 0
+
+
+def test_upload_bytes_never_overwrites_existing_different_content():
+    from hashlib import sha256
+
+    existing_content = b"old"
+    new_content = b"new"
+
+    class Info:
+        private = True
+        sha = "c" * 40
+
+    class ExistingApi:
+        def __init__(self):
+            self.info = Info()
+            self.uploads = 0
+        def whoami(self):
+            return {"name": "alice"}
+        def repo_info(self, **kwargs):
+            return self.info
+        def file_exists(self, **kwargs):
+            return True
+        def upload_file(self, **kwargs):
+            self.uploads += 1
+        def get_paths_info(self, **kwargs):
+            lfs = type("Lfs", (), {"sha256": sha256(existing_content).hexdigest()})()
+            return [type("PathInfo", (), {"lfs": lfs})()]
+
+    api = ExistingApi()
+    store = PrivateHubStore.connect(api_factory=lambda: api)
+    with pytest.raises(ValueError, match="checksum"):
+        store.upload_bytes("manifests/id/manifest-content.json", new_content)
+    assert api.uploads == 0

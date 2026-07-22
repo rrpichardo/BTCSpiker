@@ -45,4 +45,7 @@ def raw_manifest_id(manifest: RawDatasetManifest) -> str:
 def publish_raw_manifest(manifest: RawDatasetManifest, store: Any) -> Any:
     """Publish a named immutable manifest through a compatible private store."""
     dataset_id = raw_manifest_id(manifest)
-    return store.upload_bytes(f"manifests/{dataset_id}.json", _canonical(asdict(manifest)))
+    content = _canonical(asdict(manifest))
+    content_sha = hashlib.sha256(content).hexdigest()
+    remote_path = f"manifests/{dataset_id}/manifest-{content_sha}.json"
+    return store.upload_bytes(remote_path, content)
