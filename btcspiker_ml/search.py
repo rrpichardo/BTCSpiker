@@ -184,7 +184,7 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
                     )
                 elif outcome == "finished":
                     metrics = dict(record.get("metrics", {}))
-                    eligible = _selection_eligible(metrics, values.get("max_development_brier_ratio"))
+                    eligible = _selection_eligible(metrics, values)
                     tracker.log_tags({"selection_eligible": eligible})
                     tracker.end_run("FINISHED")
                     score = metrics.get("aggregate_pr_auc")
@@ -223,17 +223,25 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
         state.save(state_path)
 
 
-def _selection_eligible(metrics: Mapping[str, Any], max_development_brier_ratio: Any) -> bool:
-    """Refuse a stage win to a trial that already fails qualification's calibration bar.
+def _selection_eligible(metrics: Mapping[str, Any], values: Mapping[str, Any]) -> bool:
+    """Refuse a stage win to a trial that already fails qualification's bars.
 
-    Ranking quality alone used to decide the winner, so a confident but poorly
-    calibrated candidate could take the stage and then lose qualification on
-    Brier — after the sealed holdout had already been spent.
+    Selection used to rank on mean fold score alone, so a candidate could take
+    a stage on one lucky fold, or while badly calibrated, and only lose
+    qualification afterwards — once the sealed holdout had been spent.  Both
+    bars are the same ones qualification applies.
     """
-    if max_development_brier_ratio is None:
-        return True
-    ratio = metrics.get("development_brier_ratio")
-    return ratio is None or float(ratio) <= float(max_development_brier_ratio)
+    max_brier_ratio = values.get("max_development_brier_ratio")
+    if max_brier_ratio is not None:
+        ratio = metrics.get("development_brier_ratio")
+        if ratio is not None and float(ratio) > float(max_brier_ratio):
+            return False
+    minimum_folds = values.get("min_development_folds_won")
+    if minimum_folds is not None:
+        won = metrics.get("development_folds_won")
+        if won is not None and float(won) < float(minimum_folds):
+            return False
+    return True
 
 
 def _lineage(

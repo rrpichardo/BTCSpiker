@@ -49,6 +49,10 @@ CALIBRATION_FRACTION = 0.25
 # against the prevalence baseline; development selection applies the same bar
 # so the tournament cannot crown a candidate that is already disqualified.
 MAX_DEVELOPMENT_BRIER_RATIO = 1.05
+# Qualification also requires at least four folds beaten.  Selecting on the mean
+# fold score alone let one lucky fold carry an otherwise unbeaten-by-prevalence
+# candidate to a stage win.
+MIN_DEVELOPMENT_FOLDS_WON = 4
 
 
 def build_stage_trials(config: ExperimentConfig, raw: dict[str, Any], stage: str) -> list[dict[str, Any]]:
@@ -263,6 +267,7 @@ def _evaluate_development_trial(
     source = frame.loc[:, columns].replace([np.inf, -np.inf], np.nan)
     fold_metrics: dict[str, float] = {}
     scores: list[float] = []
+    folds_won = 0
     fit_seconds = 0.0
     inference_seconds = 0.0
     per_row_latency_ms: list[float] = []
@@ -287,6 +292,9 @@ def _evaluate_development_trial(
         metric = evaluate_predictions(target[validation], prediction, timestamps.iloc[validation], threshold=0.5)
         fold_metrics[f"fold_{fold_number}_pr_auc"] = metric.pr_auc
         scores.append(metric.pr_auc)
+        # A prevalence-constant predictor scores PR-AUC == prevalence, so this
+        # counts the folds that actually beat the baseline qualification uses.
+        folds_won += int(metric.pr_auc > metric.prevalence)
         oof_parts.append(pd.DataFrame({
             "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
             "target": target[validation], "prediction": prediction, "fold": fold_number,
@@ -332,6 +340,7 @@ def _evaluate_development_trial(
         "metrics": {
             "aggregate_pr_auc": float(np.mean(scores)), "p95_latency_ms": p95_latency_ms,
             "development_brier_ratio": development_brier_ratio,
+            "development_folds_won": float(folds_won),
             **fold_metrics,
         },
         "model": fitted,
@@ -408,6 +417,7 @@ def main() -> int:
         "max_parallel_jobs": config.search.max_parallel_jobs,
         "trials": build_stage_trials(config, raw, args.stage), "labelled_rows": int(frame.shape[0]),
         "max_development_brier_ratio": MAX_DEVELOPMENT_BRIER_RATIO,
+        "min_development_folds_won": MIN_DEVELOPMENT_FOLDS_WON,
         "development_fold_positive_events": raw.get("development_fold_positive_events", []),
         "resume": args.resume,
     }

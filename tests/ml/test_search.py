@@ -224,3 +224,35 @@ def test_miscalibrated_trial_does_not_win_despite_a_higher_ranking_score(
     # calibrated trial holds the stage win.
     assert state.best_scores["linear"] == pytest.approx(0.20)
     assert state.stage_score_history["linear"] == [0.20, 0.40]
+
+
+def test_one_lucky_fold_cannot_win_a_stage_for_an_inconsistent_trial(tmp_path: Path):
+    config = _config(tmp_path)
+    config.update(
+        min_development_folds_won=4,
+        trials=[
+            {
+                "id": "consistent",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.20,
+                    "development_folds_won": 5,
+                },
+            },
+            {
+                "id": "one-lucky-fold",
+                "model_family": "logistic",
+                "outcome": "finished",
+                "metrics": {
+                    "aggregate_pr_auc": 0.40,
+                    "development_folds_won": 1,
+                },
+            },
+        ],
+    )
+
+    run_stage(config, "d1", "core_v1", "linear")
+    state = SearchState.load(tmp_path / "state" / "search-1.json")
+
+    assert state.best_scores["linear"] == pytest.approx(0.20)

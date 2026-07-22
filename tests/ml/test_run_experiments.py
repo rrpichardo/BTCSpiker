@@ -300,6 +300,16 @@ def test_development_trials_report_calibration_against_the_prevalence_baseline(
     assert metrics["development_brier_ratio"] > 0.0
 
 
+def test_development_trials_report_how_many_folds_beat_prevalence(tmp_path: Path):
+    path, raw = _write_config(tmp_path, linear_trials=1)
+    config = load_experiment_config(path)
+    trial = build_stage_trials(config, raw, "linear")[0]
+
+    metrics = trial["evaluate"]()["metrics"]
+
+    assert 0 <= metrics["development_folds_won"] <= config.validation.folds
+
+
 def test_prevalence_baseline_is_never_wrapped_in_calibration(tmp_path: Path):
     path, _raw = _write_config(tmp_path)
     config = load_experiment_config(path)
