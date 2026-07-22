@@ -327,17 +327,24 @@ def remove_verified_shard_cache(
     expected_keys = {(kind, hour) for kind in NORMALIZED_KINDS for hour in range(24)}
     inventory: dict[tuple[str, int], tuple[Path, str, str]] = {}
     layout = re.compile(
-        r"(?:^|.*/)(raw/kind=(book_deltas|book_states|trades)/source=[^/]+/"
+        r"(?:^|.*/)(raw/kind=(book_deltas|book_states|trades)/source=([^/]+)/"
         rf"product={re.escape(shard.product_id)}/date={shard.trade_date.isoformat()}/hour=(\d{{2}})/"
         r"part-([0-9a-f]{64})\.parquet)$"
     )
+    required_sources = {
+        "book_deltas": "cbb26",
+        "book_states": "cbb26",
+        "trades": "coinbase_public_trades",
+    }
     if len(expected) != 72 or len(set(expected)) != 72:
         raise UnverifiedRemoteArtifact("daily normalized inventory must contain 72 unique artifacts")
     for artifact in expected:
         match = layout.fullmatch(artifact.as_posix())
-        if match is None or int(match.group(3)) > 23:
+        if match is None or int(match.group(4)) > 23:
             raise UnverifiedRemoteArtifact(f"artifact path does not match daily normalized inventory: {artifact}")
-        kind, hour, path_digest = match.group(2), int(match.group(3)), match.group(4)
+        kind, source, hour, path_digest = match.group(2), match.group(3), int(match.group(4)), match.group(5)
+        if source != required_sources[kind]:
+            raise UnverifiedRemoteArtifact(f"artifact source is not canonical for {kind}: {source}")
         key = (kind, hour)
         if key in inventory or not artifact.is_file():
             raise UnverifiedRemoteArtifact(f"daily normalized inventory is incomplete or duplicated at {key}")
@@ -351,20 +358,22 @@ def remove_verified_shard_cache(
     def receipt_value(receipt: object, field: str) -> Any:
         return receipt.get(field) if isinstance(receipt, Mapping) else getattr(receipt, field, None)
 
-    receipts_by_path: dict[str, list[object]] = {}
-    for receipt in receipts:
-        remote_path = receipt_value(receipt, "remote_path")
-        if isinstance(remote_path, str):
-            receipts_by_path.setdefault(remote_path, []).append(receipt)
+    artifact_paths = {remote_path for _, remote_path, _ in inventory.values()}
+    receipt_paths = [receipt_value(receipt, "remote_path") for receipt in receipts]
+    if (
+        len(receipts) != 72
+        or any(not isinstance(path, str) for path in receipt_paths)
+        or len(set(receipt_paths)) != 72
+        or set(receipt_paths) != artifact_paths
+    ):
+        raise UnverifiedRemoteArtifact("receipt inventory must exactly match the daily artifact paths")
+    receipts_by_path = dict(zip(receipt_paths, receipts))
     for artifact, remote_path, local_digest in inventory.values():
-        matches = receipts_by_path.get(remote_path, [])
-        if len(matches) != 1:
-            raise UnverifiedRemoteArtifact(f"missing unique upload receipt for {artifact}")
-        receipt = matches[0]
+        receipt = receipts_by_path[remote_path]
         revision = receipt_value(receipt, "revision")
         if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision or "") is None:
             raise UnverifiedRemoteArtifact(f"upload receipt is not commit-pinned for {artifact}")
-        if receipt_value(receipt, "success") is False:
+        if receipt_value(receipt, "success") is not True:
             raise UnverifiedRemoteArtifact(f"upload receipt is unsuccessful for {artifact}")
         if receipt_value(receipt, "sha256") != local_digest:
             raise UnverifiedRemoteArtifact(f"remote digest mismatch for {artifact}")

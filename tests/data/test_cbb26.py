@@ -84,6 +84,7 @@ def _daily_artifacts(root: Path):
                     "remote_path": relative.as_posix(),
                     "sha256": digest,
                     "size_bytes": len(content),
+                    "success": True,
                 }
             )
     return artifacts, receipts
@@ -392,6 +393,51 @@ def test_remove_cache_rejects_floating_upload_receipt(tmp_path: Path):
     artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
     receipts[0]["revision"] = "main"
     with pytest.raises(UnverifiedRemoteArtifact, match="commit-pinned"):
+        remove_verified_shard_cache(
+            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+        )
+
+
+def test_remove_cache_rejects_extra_receipt(tmp_path: Path):
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+    receipts.append({**receipts[0], "remote_path": "raw/unexpected.parquet"})
+    with pytest.raises(UnverifiedRemoteArtifact, match="receipt inventory"):
+        remove_verified_shard_cache(
+            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+        )
+
+
+def test_remove_cache_requires_explicit_success(tmp_path: Path):
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+    receipts[0].pop("success")
+    with pytest.raises(UnverifiedRemoteArtifact, match="unsuccessful"):
+        remove_verified_shard_cache(
+            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "missing_path"])
+def test_remove_cache_rejects_duplicate_or_missing_receipt_path(tmp_path: Path, mutation: str):
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+    if mutation == "duplicate":
+        receipts[-1]["remote_path"] = receipts[0]["remote_path"]
+    else:
+        receipts[-1].pop("remote_path")
+    with pytest.raises(UnverifiedRemoteArtifact, match="receipt inventory"):
+        remove_verified_shard_cache(
+            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+        )
+
+
+def test_remove_cache_rejects_noncanonical_source(tmp_path: Path):
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+    wrong_source = Path(str(artifacts[0]).replace("source=cbb26", "source=other"))
+    wrong_source.parent.mkdir(parents=True)
+    artifacts[0].replace(wrong_source)
+    artifacts[0] = wrong_source
+    receipts[0]["remote_path"] = receipts[0]["remote_path"].replace("source=cbb26", "source=other")
+
+    with pytest.raises(UnverifiedRemoteArtifact, match="source"):
         remove_verified_shard_cache(
             _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
         )
