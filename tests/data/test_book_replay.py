@@ -146,6 +146,31 @@ def test_replay_increments_segment_when_day_starts_inside_gap(replay_anchor):
     assert states[0].segment_id == 1
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_replay_chooses_highest_sequence_same_second_anchor_independent_of_order(
+    replay_anchor, reverse
+):
+    higher_sequence = {
+        **replay_anchor,
+        "source_sequence_num": 200,
+        "bid_book": {Decimal("90000.00"): Decimal("2")},
+    }
+    anchors = [replay_anchor, higher_sequence]
+    if reverse:
+        anchors.reverse()
+
+    states = list(replay_day(
+        anchors=anchors,
+        deltas=[],
+        metadata=[],
+        day_start=replay_anchor["anchor_second"],
+        day_end=replay_anchor["anchor_second"],
+    ))
+
+    assert states[0].sequence_end == 200
+    assert states[0].bid_size == Decimal("2")
+
+
 @pytest.mark.parametrize("row_index", [0, 1, 2])
 def test_replay_fails_closed_when_any_source_bbo_disagrees(replay_anchor, replay_delta_rows, row_index):
     replay_delta_rows[row_index]["best_bid"] = Decimal("99999")

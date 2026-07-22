@@ -450,13 +450,15 @@ def test_load_replay_rows_uses_bounded_deterministic_queries():
     start = datetime.combine(shard.trade_date, time.min, tzinfo=UTC)
     end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=UTC)
     anchor = ("BTC-USD", start, 100, "90000", "90001", {"90000": "1"}, {"90001": "1"})
+    newer_anchor = ("BTC-USD", start, 200, "90000", "90001", {"90000": "2"}, {"90001": "1"})
+    newest_checkpoint = ("BTC-USD", start, 300, "90000", "90001", {"90000": "3"}, {"90001": "1"})
     delta = ("BTC-USD", start, 101, 101, "90000", "90001", [["bid", "90000", "2"]])
     metadata = ("BTC-USD", start, end, "complete", 0, {})
 
     class Cursor:
         def __init__(self):
             self.executions = []
-            self.results = iter([[anchor], [], [], [delta], [metadata]])
+            self.results = iter([[anchor], [newer_anchor], [newest_checkpoint], [delta], [metadata]])
         def execute(self, sql, params): self.executions.append((sql, params))
         def fetchall(self): return next(self.results)
     class Connection:
@@ -466,11 +468,14 @@ def test_load_replay_rows_uses_bounded_deterministic_queries():
     connection = Connection()
     rows = load_replay_rows(connection, shard)
 
+    assert len(rows.anchors) == 1
     assert rows.anchors[0]["anchor_second"] == start
+    assert rows.anchors[0]["source_sequence_num"] == 300
     assert rows.deltas[0]["changes"] == [["bid", "90000", "2"]]
     assert rows.metadata[0]["window_end"] == end
     assert len(connection._cursor.executions) == 5
     assert connection._cursor.executions[0][1] == ("BTC-USD", start)
+    assert "ORDER BY anchor_second DESC, source_sequence_num DESC LIMIT 1" in connection._cursor.executions[0][0]
     assert connection._cursor.executions[1][1] == ("BTC-USD", start, end)
     assert connection._cursor.executions[2][1] == ("BTC-USD", start, end)
     assert connection._cursor.executions[3][1] == ("BTC-USD", start, end)

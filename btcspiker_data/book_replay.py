@@ -109,7 +109,10 @@ def replay_day(
     initial_anchors = [row for row in anchor_rows if _anchor_time(row) <= start]
     if not initial_anchors:
         raise BookReplayError("missing anchor at or before day start")
-    initial_anchor = max(initial_anchors, key=_anchor_time)
+    initial_anchor = max(
+        initial_anchors,
+        key=lambda row: (_anchor_time(row), int(_field(row, "source_sequence_num"))),
+    )
 
     delta_rows = [row for row in deltas if _field(row, "product_id") == product]
     for row in delta_rows:

@@ -87,7 +87,8 @@ def load_replay_rows(connection: Any, shard: CBB26Shard) -> ReplayRows:
     initial = _fetch_dicts(
         cursor,
         f"SELECT {', '.join(anchor_columns)} FROM {STAGING_SCHEMA}.orderbook_replay_anchors "
-        "WHERE product_id=%s AND anchor_second <= %s ORDER BY anchor_second DESC LIMIT 1",
+        "WHERE product_id=%s AND anchor_second <= %s "
+        "ORDER BY anchor_second DESC, source_sequence_num DESC LIMIT 1",
         (shard.product_id, start),
         anchor_columns,
     )
@@ -127,10 +128,12 @@ def load_replay_rows(connection: Any, shard: CBB26Shard) -> ReplayRows:
         (shard.product_id, end, start),
         metadata_columns,
     )
-    anchors_by_key = {
-        (row["product_id"], row["anchor_second"], row["source_sequence_num"]): row
-        for row in [*initial, *daily, *checkpoints]
-    }
+    anchors_by_key: dict[tuple[str, datetime], dict[str, Any]] = {}
+    for row in [*initial, *daily, *checkpoints]:
+        key = (row["product_id"], row["anchor_second"])
+        retained = anchors_by_key.get(key)
+        if retained is None or row["source_sequence_num"] > retained["source_sequence_num"]:
+            anchors_by_key[key] = row
     anchors = sorted(
         anchors_by_key.values(), key=lambda row: (row["anchor_second"], row["source_sequence_num"])
     )
