@@ -16,6 +16,8 @@ from btcspiker_data.cbb26 import (
     list_btc_shards,
     read_sidecar,
     remove_verified_shard_cache,
+    load_replay_rows,
+    process_replay_day,
     restore_shard,
     sha256_file,
 )
@@ -441,3 +443,69 @@ def test_remove_cache_rejects_noncanonical_source(tmp_path: Path):
         remove_verified_shard_cache(
             _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
         )
+
+
+def test_load_replay_rows_uses_bounded_deterministic_queries():
+    shard = _shard()
+    start = datetime.combine(shard.trade_date, time.min, tzinfo=UTC)
+    end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=UTC)
+    anchor = ("BTC-USD", start, 100, "90000", "90001", {"90000": "1"}, {"90001": "1"})
+    delta = ("BTC-USD", start, 101, 101, "90000", "90001", [["bid", "90000", "2"]])
+    metadata = ("BTC-USD", start, end, "complete", 0, {})
+
+    class Cursor:
+        def __init__(self):
+            self.executions = []
+            self.results = iter([[anchor], [], [], [delta], [metadata]])
+        def execute(self, sql, params): self.executions.append((sql, params))
+        def fetchall(self): return next(self.results)
+    class Connection:
+        def __init__(self): self._cursor = Cursor()
+        def cursor(self): return self._cursor
+
+    connection = Connection()
+    rows = load_replay_rows(connection, shard)
+
+    assert rows.anchors[0]["anchor_second"] == start
+    assert rows.deltas[0]["changes"] == [["bid", "90000", "2"]]
+    assert rows.metadata[0]["window_end"] == end
+    assert len(connection._cursor.executions) == 5
+    assert connection._cursor.executions[0][1] == ("BTC-USD", start)
+    assert connection._cursor.executions[1][1] == ("BTC-USD", start, end)
+    assert connection._cursor.executions[2][1] == ("BTC-USD", start, end)
+    assert connection._cursor.executions[3][1] == ("BTC-USD", start, end)
+    assert connection._cursor.executions[4][1] == ("BTC-USD", end, start)
+    assert all("ORDER BY" in sql for sql, _ in connection._cursor.executions)
+
+
+def test_process_replay_day_feeds_bounded_rows_to_replay_and_publish(tmp_path: Path):
+    shard = _shard()
+    start = datetime.combine(shard.trade_date, time.min, tzinfo=UTC)
+    end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=UTC)
+    replay_calls, publish_calls = [], []
+    rows = type("Rows", (), {"anchors": ["anchor"], "deltas": ["delta"], "metadata": ["gap"]})()
+
+    def load(_connection, actual_shard):
+        assert actual_shard == shard
+        return rows
+    def replay(**kwargs):
+        replay_calls.append(kwargs)
+        return iter(["state"])
+    def publish(**kwargs):
+        publish_calls.append(kwargs)
+        return ["receipt"]
+
+    result = process_replay_day(
+        object(), shard, tmp_path, load=load, replay=replay, publish=publish
+    )
+
+    assert result == ["receipt"]
+    assert replay_calls == [{
+        "anchors": ["anchor"], "deltas": ["delta"], "metadata": ["gap"],
+        "day_start": start, "day_end": end, "product_id": "BTC-USD",
+    }]
+    assert publish_calls == [{
+        "deltas": ["delta"], "states": ["state"], "root": tmp_path,
+        "source_revision": "c1e89eded9915e1c75a18911298edfbbbe4050ce",
+        "source_date": "2026-04-24",
+    }]

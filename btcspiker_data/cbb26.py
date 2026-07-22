@@ -53,6 +53,125 @@ class CBB26Shard:
     expected_size: int
 
 
+@dataclass(frozen=True)
+class ReplayRows:
+    """Bounded restored rows required for one deterministic daily replay."""
+
+    anchors: list[dict[str, Any]]
+    deltas: list[dict[str, Any]]
+    metadata: list[dict[str, Any]]
+
+
+def _fetch_dicts(
+    cursor: Any, sql: str, params: tuple[object, ...], columns: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    cursor.execute(sql, params)
+    result: list[dict[str, Any]] = []
+    for row in cursor.fetchall():
+        if isinstance(row, Mapping):
+            result.append(dict(row))
+        else:
+            result.append(dict(zip(columns, row)))
+    return result
+
+
+def load_replay_rows(connection: Any, shard: CBB26Shard) -> ReplayRows:
+    """Read only the restored rows needed for one product/date replay."""
+    start = datetime.combine(shard.trade_date, time.min, tzinfo=timezone.utc)
+    end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=timezone.utc)
+    cursor = connection.cursor()
+    anchor_columns = (
+        "product_id", "anchor_second", "source_sequence_num", "best_bid",
+        "best_ask", "bid_book", "ask_book",
+    )
+    initial = _fetch_dicts(
+        cursor,
+        f"SELECT {', '.join(anchor_columns)} FROM {STAGING_SCHEMA}.orderbook_replay_anchors "
+        "WHERE product_id=%s AND anchor_second <= %s ORDER BY anchor_second DESC LIMIT 1",
+        (shard.product_id, start),
+        anchor_columns,
+    )
+    daily = _fetch_dicts(
+        cursor,
+        f"SELECT {', '.join(anchor_columns)} FROM {STAGING_SCHEMA}.orderbook_replay_anchors "
+        "WHERE product_id=%s AND anchor_second BETWEEN %s AND %s ORDER BY anchor_second, source_sequence_num",
+        (shard.product_id, start, end),
+        anchor_columns,
+    )
+    checkpoints = _fetch_dicts(
+        cursor,
+        f"SELECT product_id, checkpoint_hour AS anchor_second, source_sequence_num, best_bid, best_ask, bid_book, ask_book "
+        f"FROM {STAGING_SCHEMA}.orderbook_checkpoints WHERE product_id=%s AND checkpoint_hour BETWEEN %s AND %s "
+        "ORDER BY checkpoint_hour, source_sequence_num",
+        (shard.product_id, start, end),
+        anchor_columns,
+    )
+    delta_columns = (
+        "product_id", "changed_second", "source_sequence_num_start", "source_sequence_num_end",
+        "best_bid", "best_ask", "changes",
+    )
+    deltas = _fetch_dicts(
+        cursor,
+        f"SELECT {', '.join(delta_columns)} FROM {STAGING_SCHEMA}.orderbook_second_deltas "
+        "WHERE product_id=%s AND changed_second BETWEEN %s AND %s "
+        "ORDER BY changed_second, source_sequence_num_start, source_sequence_num_end",
+        (shard.product_id, start, end),
+        delta_columns,
+    )
+    metadata_columns = ("product_id", "window_start", "window_end", "status", "gap_count", "metadata")
+    metadata = _fetch_dicts(
+        cursor,
+        f"SELECT {', '.join(metadata_columns)} FROM {STAGING_SCHEMA}.orderbook_replay_metadata "
+        "WHERE product_id=%s AND window_start <= %s AND window_end >= %s "
+        "ORDER BY window_start, window_end, status",
+        (shard.product_id, end, start),
+        metadata_columns,
+    )
+    anchors_by_key = {
+        (row["product_id"], row["anchor_second"], row["source_sequence_num"]): row
+        for row in [*initial, *daily, *checkpoints]
+    }
+    anchors = sorted(
+        anchors_by_key.values(), key=lambda row: (row["anchor_second"], row["source_sequence_num"])
+    )
+    return ReplayRows(anchors=anchors, deltas=deltas, metadata=metadata)
+
+
+def process_replay_day(
+    connection: Any,
+    shard: CBB26Shard,
+    root: str | Path,
+    *,
+    load: Callable[[Any, CBB26Shard], ReplayRows] = load_replay_rows,
+    replay: Callable[..., Iterable[object]] | None = None,
+    publish: Callable[..., list[object]] | None = None,
+) -> list[object]:
+    """Replay and immutably publish one restored CBB26 product/day."""
+    if replay is None or publish is None:
+        from .book_replay import publish_replay_partitions, replay_day
+
+        replay = replay or replay_day
+        publish = publish or publish_replay_partitions
+    start = datetime.combine(shard.trade_date, time.min, tzinfo=timezone.utc)
+    end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=timezone.utc)
+    rows = load(connection, shard)
+    states = list(replay(
+        anchors=rows.anchors,
+        deltas=rows.deltas,
+        metadata=rows.metadata,
+        day_start=start,
+        day_end=end,
+        product_id=shard.product_id,
+    ))
+    return publish(
+        deltas=rows.deltas,
+        states=states,
+        root=root,
+        source_revision=CBB26_REVISION,
+        source_date=shard.trade_date.isoformat(),
+    )
+
+
 def _node_value(node: object, name: str) -> Any:
     return node.get(name) if isinstance(node, Mapping) else getattr(node, name, None)
 

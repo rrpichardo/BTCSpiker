@@ -67,8 +67,8 @@ def _is_gap(row: object) -> bool:
     return status in {"gap", "excluded", "incomplete", "missing", "error"} or int(_field(row, "gap_count") or 0) > 0
 
 
-def _gap_seconds(metadata: Iterable[object], start: datetime, end: datetime) -> set[datetime]:
-    excluded: set[datetime] = set()
+def _gap_windows(metadata: Iterable[object], start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+    excluded: list[tuple[datetime, datetime]] = []
     for row in metadata:
         if not _is_gap(row):
             continue
@@ -76,11 +76,16 @@ def _gap_seconds(metadata: Iterable[object], start: datetime, end: datetime) -> 
         window_end = _utc(_field(row, "window_end"), "window_end")
         if window_end < window_start:
             raise BookReplayError("gap window regressed")
-        second = max(start, window_start)
-        while second <= min(end, window_end):
-            excluded.add(second)
-            second += timedelta(seconds=1)
-    return excluded
+        if window_end > start and window_start <= end:
+            excluded.append((max(start, window_start), min(end + timedelta(seconds=1), window_end)))
+    return sorted(excluded)
+
+
+def _anchor_time(row: object) -> datetime:
+    value = _field(row, "anchor_second")
+    if value is None:
+        value = _field(row, "checkpoint_hour")
+    return _utc(value, "anchor_second")
 
 
 def replay_day(
@@ -94,83 +99,105 @@ def replay_day(
 ) -> Iterator[BookState]:
     """Yield end-of-second states without manufacturing states across source gaps."""
     start = _utc(day_start, "day_start")
-    anchor_rows = [row for row in anchors if _utc(_field(row, "anchor_second"), "anchor_second") <= start]
-    if product_id is not None:
-        anchor_rows = [row for row in anchor_rows if _field(row, "product_id") == product_id]
-    if not anchor_rows:
-        raise BookReplayError("missing anchor at or before day start")
-    anchor = max(anchor_rows, key=lambda row: _field(row, "anchor_second"))
-    product = product_id or _field(anchor, "product_id")
+    all_anchors = list(anchors)
+    product = product_id or next((_field(row, "product_id") for row in all_anchors if _field(row, "product_id")), None)
     if not isinstance(product, str) or not product:
         raise BookReplayError("missing product_id")
+    anchor_rows = [row for row in all_anchors if _field(row, "product_id") == product]
+    for row in anchor_rows:
+        _anchor_time(row)
+    initial_anchors = [row for row in anchor_rows if _anchor_time(row) <= start]
+    if not initial_anchors:
+        raise BookReplayError("missing anchor at or before day start")
+    initial_anchor = max(initial_anchors, key=_anchor_time)
 
     delta_rows = [row for row in deltas if _field(row, "product_id") == product]
     for row in delta_rows:
         _utc(_field(row, "changed_second"), "changed_second")
     delta_rows.sort(key=lambda row: (_field(row, "changed_second"), _field(row, "source_sequence_num_start")))
-    final = _utc(day_end, "day_end") if day_end is not None else (max((_field(row, "changed_second") for row in delta_rows), default=start))
+    final = _utc(day_end, "day_end") if day_end is not None else max(
+        [start, *(_field(row, "changed_second") for row in delta_rows), *(_anchor_time(row) for row in anchor_rows)]
+    )
     if final < start:
         raise BookReplayError("day_end precedes day_start")
-
-    bids, asks = _book(_field(anchor, "bid_book"), "bid_book"), _book(_field(anchor, "ask_book"), "ask_book")
-    best_bid, bid_size, best_ask, ask_size = _bbo(bids, asks)
-    if best_bid != _decimal(_field(anchor, "best_bid"), "best_bid") or best_ask != _decimal(_field(anchor, "best_ask"), "best_ask"):
-        raise BookReplayError("source BBO mismatch")
-    last_sequence = int(_field(anchor, "source_sequence_num"))
-    anchor_second = _utc(_field(anchor, "anchor_second"), "anchor_second")
-    baseline = BookState(product, anchor_second, last_sequence, last_sequence, best_bid, bid_size, best_ask, ask_size)
-    states_by_second: dict[datetime, BookState] = {}
-
+    anchor_events: dict[datetime, list[object]] = {}
+    for row in anchor_rows:
+        when = _anchor_time(row)
+        if _anchor_time(initial_anchor) <= when <= final:
+            anchor_events.setdefault(when, []).append(row)
+    delta_events: dict[datetime, list[object]] = {}
     for row in delta_rows:
-        changed = _field(row, "changed_second")
-        if changed < anchor_second or changed > final:
-            continue
-        sequence_start, sequence_end = int(_field(row, "source_sequence_num_start")), int(_field(row, "source_sequence_num_end"))
-        if sequence_start > sequence_end or sequence_start <= last_sequence:
-            raise BookReplayError("sequence regression")
-        changes = _field(row, "changes")
-        if not isinstance(changes, Sequence):
-            raise BookReplayError("invalid changes")
-        for change in changes:
-            try:
-                side, raw_price, raw_quantity = change
-            except (TypeError, ValueError) as error:
-                raise BookReplayError("invalid L2 change") from error
-            price, quantity = _decimal(raw_price, "price"), _decimal(raw_quantity, "quantity")
-            if side not in {"bid", "offer"} or price <= 0 or quantity < 0:
-                raise BookReplayError("invalid L2 change")
-            book = bids if side == "bid" else asks
-            if quantity == 0:
-                book.pop(price, None)
-            else:
-                book[price] = quantity
-        best_bid, bid_size, best_ask, ask_size = _bbo(bids, asks)
-        if best_bid != _decimal(_field(row, "best_bid"), "best_bid") or best_ask != _decimal(_field(row, "best_ask"), "best_ask"):
-            raise BookReplayError("source BBO mismatch")
-        state = BookState(product, changed, sequence_start, sequence_end, best_bid, bid_size, best_ask, ask_size)
-        if changed < start:
-            baseline = state
-        else:
-            states_by_second[changed] = state
-        last_sequence = sequence_end
+        when = _field(row, "changed_second")
+        if _anchor_time(initial_anchor) < when <= final:
+            delta_events.setdefault(when, []).append(row)
+    gaps = _gap_windows(metadata, _anchor_time(initial_anchor), final)
 
-    states_by_second.setdefault(start, baseline)
-
-    excluded = _gap_seconds(metadata, start, final)
+    bids: dict[Decimal, Decimal] = {}
+    asks: dict[Decimal, Decimal] = {}
     current: BookState | None = None
+    last_sequence: int | None = None
     segment = 0
-    was_excluded = False
-    second = start
+    needs_new_segment = False
+    second = _anchor_time(initial_anchor)
     while second <= final:
-        if second in excluded:
-            was_excluded = True
+        if any(window_start <= second < window_end for window_start, window_end in gaps):
+            needs_new_segment = True
+            if current is not None:
+                current = None
+                bids, asks = {}, {}
+                last_sequence = None
             second += timedelta(seconds=1)
             continue
-        if was_excluded:
-            segment += 1
-            was_excluded = False
-        current = states_by_second.get(second, current)
-        if current is not None:
+
+        anchors_at_second = anchor_events.get(second, ())
+        if anchors_at_second:
+            anchor = max(anchors_at_second, key=lambda row: int(_field(row, "source_sequence_num")))
+            bids = _book(_field(anchor, "bid_book"), "bid_book")
+            asks = _book(_field(anchor, "ask_book"), "ask_book")
+            best_bid, bid_size, best_ask, ask_size = _bbo(bids, asks)
+            if best_bid != _decimal(_field(anchor, "best_bid"), "best_bid") or best_ask != _decimal(_field(anchor, "best_ask"), "best_ask"):
+                raise BookReplayError("source BBO mismatch")
+            last_sequence = int(_field(anchor, "source_sequence_num"))
+            if needs_new_segment:
+                segment += 1
+                needs_new_segment = False
+            current = BookState(
+                product, second, last_sequence, last_sequence, best_bid, bid_size, best_ask, ask_size, segment
+            )
+
+        for row in delta_events.get(second, ()):
+            if current is None or last_sequence is None:
+                continue
+            sequence_start = int(_field(row, "source_sequence_num_start"))
+            sequence_end = int(_field(row, "source_sequence_num_end"))
+            if sequence_start > sequence_end or sequence_start <= last_sequence:
+                raise BookReplayError("sequence regression")
+            changes = _field(row, "changes")
+            if not isinstance(changes, Sequence):
+                raise BookReplayError("invalid changes")
+            for change in changes:
+                try:
+                    side, raw_price, raw_quantity = change
+                except (TypeError, ValueError) as error:
+                    raise BookReplayError("invalid L2 change") from error
+                price = _decimal(raw_price, "price")
+                quantity = _decimal(raw_quantity, "quantity")
+                if side not in {"bid", "offer"} or price <= 0 or quantity < 0:
+                    raise BookReplayError("invalid L2 change")
+                book = bids if side == "bid" else asks
+                if quantity == 0:
+                    book.pop(price, None)
+                else:
+                    book[price] = quantity
+            best_bid, bid_size, best_ask, ask_size = _bbo(bids, asks)
+            if best_bid != _decimal(_field(row, "best_bid"), "best_bid") or best_ask != _decimal(_field(row, "best_ask"), "best_ask"):
+                raise BookReplayError("source BBO mismatch")
+            last_sequence = sequence_end
+            current = BookState(
+                product, second, sequence_start, sequence_end, best_bid, bid_size, best_ask, ask_size, segment
+            )
+
+        if second >= start and current is not None:
             yield BookState(
                 current.product_id, second, current.sequence_start, current.sequence_end,
                 current.best_bid, current.bid_size, current.best_ask, current.ask_size, segment,
@@ -229,19 +256,17 @@ def publish_replay_partitions(
     for delta in deltas:
         changed = _utc(_field(delta, "changed_second"), "changed_second")
         state = by_second.get(changed)
-        if state is None:
-            raise BookReplayError("cannot publish delta without reconstructed state")
         changes = _field(delta, "changes")
         if not isinstance(changes, Sequence):
             raise BookReplayError("invalid changes")
         hour = changed.replace(minute=0, second=0, microsecond=0)
         grouped.setdefault(hour, []).append({
-            "source": source, "product_id": state.product_id, "observed_through": changed,
+            "source": source, "product_id": state.product_id if state else _field(delta, "product_id"), "observed_through": changed,
             "sequence_start": int(_field(delta, "source_sequence_num_start")),
             "sequence_end": int(_field(delta, "source_sequence_num_end")),
-            "best_bid": str(state.best_bid), "bid_size": str(state.bid_size),
-            "best_ask": str(state.best_ask), "ask_size": str(state.ask_size),
-            "segment_id": state.segment_id,
+            "best_bid": str(_field(delta, "best_bid")), "bid_size": str(state.bid_size) if state else None,
+            "best_ask": str(_field(delta, "best_ask")), "ask_size": str(state.ask_size) if state else None,
+            "segment_id": state.segment_id if state else None,
             "changes_json": json.dumps(changes, default=str, separators=(",", ":")),
             "source_revision": source_revision, "source_date": source_date,
         })
