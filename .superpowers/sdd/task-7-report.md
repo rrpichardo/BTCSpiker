@@ -53,3 +53,20 @@ validates completion identity/day boundaries and optional counters, audits causa
 joined-tick timestamps and segments, rejects unverifiable partitions, renders
 full per-day Markdown evidence, uses chronological event bounds, and converts
 malformed evidence into named failures wherever the report can remain useful.
+
+## Canonical completion adapter evidence
+
+RED: the integration test failed during collection with `ImportError: cannot
+import name 'serialize_trade_day_completion'`, proving the production completion
+type had no canonical persistence path.
+
+GREEN: `serialize_trade_day_completion()` now accepts the real
+`coinbase_trades.TradeDayCompletion`, validates its product/date/UTC epoch
+identity, and emits the deterministic ordered shape `product_id`, `source_date`,
+`day_start_epoch`, `day_end_epoch`, `trade_pages_complete`. The integration test
+proves adapted evidence credits 86,400 seconds while an unadapted production
+object or ad hoc missing-flag record credits zero.
+
+Final verification: `pytest tests/data/test_quality.py
+tests/data/test_raw_manifest.py tests/data/test_contracts.py
+tests/data/test_coinbase_trades.py -v` passed: **45 passed**.

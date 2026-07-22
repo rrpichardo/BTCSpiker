@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 
@@ -35,6 +35,39 @@ class RawDatasetManifest:
         value = asdict(self)
         value.pop("created_at")
         return value
+
+
+def serialize_trade_day_completion(completion: Any) -> dict[str, Any]:
+    """Serialize proven Coinbase pagination exhaustion for manifest storage.
+
+    ``TradeDayCompletion`` is created by ``CoinbaseTradeClient`` only after the
+    paginator reaches the UTC day boundary. This adapter is the sole place that
+    turns that production evidence into ``trade_pages_complete=True``.
+    """
+    from .coinbase_trades import TradeDayCompletion
+
+    if not isinstance(completion, TradeDayCompletion):
+        raise TypeError("completion must be TradeDayCompletion")
+    if not isinstance(completion.product_id, str) or not completion.product_id:
+        raise ValueError("completion product_id must be non-empty")
+    if type(completion.source_date) is not date:
+        raise ValueError("completion source_date must be a date")
+    day_start = datetime.combine(completion.source_date, datetime.min.time(), tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    if (
+        type(completion.day_start_epoch) is not int
+        or type(completion.day_end_epoch) is not int
+        or completion.day_start_epoch != int(day_start.timestamp())
+        or completion.day_end_epoch != int(day_end.timestamp())
+    ):
+        raise ValueError("completion epochs must match the UTC source date")
+    return {
+        "product_id": completion.product_id,
+        "source_date": completion.source_date.isoformat(),
+        "day_start_epoch": completion.day_start_epoch,
+        "day_end_epoch": completion.day_end_epoch,
+        "trade_pages_complete": True,
+    }
 
 
 def _canonical(value: Any) -> bytes:

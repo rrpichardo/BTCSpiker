@@ -1,9 +1,17 @@
-from datetime import datetime, timezone
+import json
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from btcspiker_data.hub_storage import PrivateHubStore
-from btcspiker_data.raw_manifest import RawDatasetManifest, publish_raw_manifest, raw_manifest_id
+from btcspiker_data.coinbase_trades import TradeDayCompletion
+from btcspiker_data.quality import audit_dataset
+from btcspiker_data.raw_manifest import (
+    RawDatasetManifest,
+    publish_raw_manifest,
+    raw_manifest_id,
+    serialize_trade_day_completion,
+)
 
 
 def _manifest_values():
@@ -49,6 +57,56 @@ def test_trade_completion_evidence_is_part_of_deterministic_identity():
         }],
     )
     assert raw_manifest_id(left) != raw_manifest_id(right)
+
+
+def test_real_trade_completion_adapter_produces_canonical_credited_evidence():
+    source_date = date(2026, 1, 1)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    completion = TradeDayCompletion(
+        product_id="BTC-USD",
+        source_date=source_date,
+        day_start_epoch=int(start.timestamp()),
+        day_end_epoch=int((start + timedelta(days=1)).timestamp()),
+    )
+
+    serialized = serialize_trade_day_completion(completion)
+
+    assert serialized == {
+        "product_id": "BTC-USD",
+        "source_date": "2026-01-01",
+        "day_start_epoch": 1767225600,
+        "day_end_epoch": 1767312000,
+        "trade_pages_complete": True,
+    }
+    assert json.dumps(serialized, separators=(",", ":")) == (
+        '{"product_id":"BTC-USD","source_date":"2026-01-01",'
+        '"day_start_epoch":1767225600,"day_end_epoch":1767312000,'
+        '"trade_pages_complete":true}'
+    )
+    values = _manifest_values()
+    values["partitions"] = []
+    manifest = RawDatasetManifest(
+        created_at=start,
+        trade_day_completions=[serialized],
+        **values,
+    )
+    report = audit_dataset(manifest, book_intervals=[(start, start + timedelta(days=1))])
+    assert report.per_day["2026-01-01"]["trade_pages_complete"] is True
+    assert report.per_day["2026-01-01"]["valid_seconds"] == 86_400
+
+    for unadapted in (completion, {key: value for key, value in serialized.items()
+                                   if key != "trade_pages_complete"}):
+        invalid_manifest = RawDatasetManifest(
+            created_at=start,
+            trade_day_completions=[unadapted],
+            **values,
+        )
+        invalid = audit_dataset(
+            invalid_manifest,
+            book_intervals=[(start, start + timedelta(days=1))],
+        )
+        assert invalid.per_day["2026-01-01"]["valid_seconds"] == 0
+        assert "invalid_trade_completion_evidence" in invalid.failures
 
 
 def test_same_identity_different_creation_times_publish_distinct_immutable_bytes():
