@@ -31,3 +31,25 @@ tests/data/test_contracts.py -v` passed: **20 passed**.
 The auditor accepts fixture-provided intervals and event records. The production
 orchestration layer must pass the persisted partition sidecars/replay incidents
 and an output directory beside its manifest when it publishes an audit.
+
+## Review-fix RED evidence
+
+`pytest tests/data/test_quality.py -v` reproduced the review findings with
+**8 failed, 7 passed**. The failures proved that missing completion flags were
+accepted, joined ticks were unsupported, remote-only partitions bypassed
+verification, input order set top-level event bounds, coverage/report assertions
+were unmet, and Markdown omitted per-day evidence.
+
+A second focused RED test reproduced a malformed naïve timestamp crashing during
+per-day aggregation after it had already been classified as malformed.
+
+## Review-fix GREEN evidence
+
+`pytest tests/data/test_quality.py tests/data/test_raw_manifest.py
+tests/data/test_contracts.py -v` passed: **30 passed**.
+
+The final gate requires an explicit boolean `trade_pages_complete is True`,
+validates completion identity/day boundaries and optional counters, audits causal
+joined-tick timestamps and segments, rejects unverifiable partitions, renders
+full per-day Markdown evidence, uses chronological event bounds, and converts
+malformed evidence into named failures wherever the report can remain useful.
