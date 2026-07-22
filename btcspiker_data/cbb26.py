@@ -26,6 +26,7 @@ STAGING_TABLES = (
     "orderbook_checkpoints",
     "orderbook_replay_metadata",
 )
+NORMALIZED_KINDS = ("book_deltas", "book_states", "trades")
 SIDECAR_SCHEMA = "cbb26_timeseries_shard_manifest_v1"
 COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker-compose.data.yaml"
 CONTAINER_DATABASE_URL = "postgresql://btcspiker:btcspiker@127.0.0.1:5432/btcspiker"
@@ -318,25 +319,54 @@ def remove_verified_shard_cache(
     shard: CBB26Shard,
     cache_root: str | Path,
     expected_artifacts: Sequence[str | Path],
-    receipts: Sequence[Mapping[str, Any]],
+    receipts: Sequence[object],
     connection: Any,
 ) -> None:
     """Delete one transient shard after its explicit normalized inventory is verified."""
     expected = [Path(path).resolve() for path in expected_artifacts]
-    if not expected or len(set(expected)) != len(expected):
-        raise UnverifiedRemoteArtifact("expected artifact inventory must be non-empty and unique")
-    receipts_by_path: dict[Path, list[Mapping[str, Any]]] = {}
-    for receipt in receipts:
-        if "artifact_path" in receipt:
-            receipts_by_path.setdefault(Path(str(receipt["artifact_path"])).resolve(), []).append(receipt)
+    expected_keys = {(kind, hour) for kind in NORMALIZED_KINDS for hour in range(24)}
+    inventory: dict[tuple[str, int], tuple[Path, str, str]] = {}
+    layout = re.compile(
+        r"(?:^|.*/)(raw/kind=(book_deltas|book_states|trades)/source=[^/]+/"
+        rf"product={re.escape(shard.product_id)}/date={shard.trade_date.isoformat()}/hour=(\d{{2}})/"
+        r"part-([0-9a-f]{64})\.parquet)$"
+    )
+    if len(expected) != 72 or len(set(expected)) != 72:
+        raise UnverifiedRemoteArtifact("daily normalized inventory must contain 72 unique artifacts")
     for artifact in expected:
-        matches = receipts_by_path.get(artifact, [])
-        if len(matches) != 1 or not artifact.is_file():
+        match = layout.fullmatch(artifact.as_posix())
+        if match is None or int(match.group(3)) > 23:
+            raise UnverifiedRemoteArtifact(f"artifact path does not match daily normalized inventory: {artifact}")
+        kind, hour, path_digest = match.group(2), int(match.group(3)), match.group(4)
+        key = (kind, hour)
+        if key in inventory or not artifact.is_file():
+            raise UnverifiedRemoteArtifact(f"daily normalized inventory is incomplete or duplicated at {key}")
+        local_digest = sha256_file(artifact)
+        if local_digest != path_digest:
+            raise UnverifiedRemoteArtifact(f"content-addressed artifact digest mismatch for {artifact}")
+        inventory[key] = (artifact, match.group(1), local_digest)
+    if set(inventory) != expected_keys:
+        raise UnverifiedRemoteArtifact("daily normalized inventory must cover every kind and UTC hour")
+
+    def receipt_value(receipt: object, field: str) -> Any:
+        return receipt.get(field) if isinstance(receipt, Mapping) else getattr(receipt, field, None)
+
+    receipts_by_path: dict[str, list[object]] = {}
+    for receipt in receipts:
+        remote_path = receipt_value(receipt, "remote_path")
+        if isinstance(remote_path, str):
+            receipts_by_path.setdefault(remote_path, []).append(receipt)
+    for artifact, remote_path, local_digest in inventory.values():
+        matches = receipts_by_path.get(remote_path, [])
+        if len(matches) != 1:
             raise UnverifiedRemoteArtifact(f"missing unique upload receipt for {artifact}")
         receipt = matches[0]
-        if receipt.get("success") is not True or not isinstance(receipt.get("commit_sha"), str) or re.fullmatch(r"[0-9a-f]{40}", receipt["commit_sha"]) is None:
+        revision = receipt_value(receipt, "revision")
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision or "") is None:
             raise UnverifiedRemoteArtifact(f"upload receipt is not commit-pinned for {artifact}")
-        if receipt.get("remote_sha256") != sha256_file(artifact):
+        if receipt_value(receipt, "success") is False:
+            raise UnverifiedRemoteArtifact(f"upload receipt is unsuccessful for {artifact}")
+        if receipt_value(receipt, "sha256") != local_digest:
             raise UnverifiedRemoteArtifact(f"remote digest mismatch for {artifact}")
     start = datetime.combine(shard.trade_date, time.min, tzinfo=timezone.utc)
     end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=timezone.utc)

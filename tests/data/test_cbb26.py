@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 import pytest
@@ -55,6 +55,38 @@ def _shard():
         "data/2026-04-24/BTC-USD.json",
         4,
     )
+
+
+def _daily_artifacts(root: Path):
+    artifacts = []
+    receipts = []
+    for kind in ("book_deltas", "book_states", "trades"):
+        source = "coinbase_public_trades" if kind == "trades" else "cbb26"
+        for hour in range(24):
+            content = f"{kind}-{hour:02d}".encode()
+            digest = hashlib.sha256(content).hexdigest()
+            relative = Path(
+                "raw",
+                f"kind={kind}",
+                f"source={source}",
+                "product=BTC-USD",
+                "date=2026-04-24",
+                f"hour={hour:02d}",
+                f"part-{digest}.parquet",
+            )
+            artifact = root / relative
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(content)
+            artifacts.append(artifact)
+            receipts.append(
+                {
+                    "revision": "a" * 40,
+                    "remote_path": relative.as_posix(),
+                    "sha256": digest,
+                    "size_bytes": len(content),
+                }
+            )
+    return artifacts, receipts
 
 
 def _tree(start: date, end: date) -> list[dict[str, object]]:
@@ -243,6 +275,11 @@ def test_restore_runs_pg_restore_inside_compose_with_import_path(tmp_path: Path)
     ]
 
 
+def test_compose_mount_matches_required_cbb26_cache_root():
+    compose = (Path(__file__).resolve().parents[2] / "docker-compose.data.yaml").read_text()
+    assert "./data/coinbase_history/cache/cbb26:/imports:ro" in compose
+
+
 def test_restore_nonzero_pg_restore_raises_without_commit(tmp_path: Path):
     dump = tmp_path / "x.dump"
     dump.write_bytes(b"dump")
@@ -271,7 +308,13 @@ def test_remove_cache_requires_verified_partition_receipts(tmp_path: Path):
     artifact.parent.mkdir()
     artifact.write_bytes(b"normalized")
     with pytest.raises(UnverifiedRemoteArtifact):
-        remove_verified_shard_cache(shard, tmp_path, expected_artifacts=[artifact], receipts=[], connection=None)
+        remove_verified_shard_cache(
+            shard,
+            tmp_path,
+            expected_artifacts=[artifact],
+            receipts=[{"artifact_path": str(artifact), "remote_sha256": sha256_file(artifact), "commit_sha": "a" * 40, "success": True}],
+            connection=None,
+        )
     assert (shard_dir / "BTC-USD.dump").exists()
 
 
@@ -284,10 +327,7 @@ def test_remove_cache_verifies_inventory_and_removes_only_target_day(tmp_path: P
     for directory in (target, other):
         (directory / "BTC-USD.dump").write_bytes(b"dump")
         (directory / "BTC-USD.json").write_text("{}")
-    artifact = tmp_path / "normalized" / "part.parquet"
-    artifact.parent.mkdir()
-    artifact.write_bytes(b"normalized")
-    digest = sha256_file(artifact)
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
 
     class Cursor:
         def __init__(self): self.executions = []
@@ -299,23 +339,59 @@ def test_remove_cache_verifies_inventory_and_removes_only_target_day(tmp_path: P
 
     connection = Connection()
     remove_verified_shard_cache(
-        shard, tmp_path, expected_artifacts=[artifact],
-        receipts=[{"artifact_path": str(artifact), "remote_sha256": digest, "commit_sha": "a" * 40, "success": True}],
+        shard, tmp_path, expected_artifacts=artifacts, receipts=receipts,
         connection=connection,
     )
     assert not target.exists()
     assert other.exists()
-    assert artifact.exists()
+    assert all(artifact.exists() for artifact in artifacts)
     assert connection.committed
     assert len(connection._cursor.executions) == 4
+    start = datetime.combine(shard.trade_date, time.min, tzinfo=timezone.utc)
+    end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=timezone.utc)
+    assert connection._cursor.executions[0][1] == ("BTC-USD", start, end, "BTC-USD", start)
+    assert connection._cursor.executions[1][1] == ("BTC-USD", start, end)
+    assert connection._cursor.executions[2][1] == ("BTC-USD", start, end)
+    assert connection._cursor.executions[3][1] == ("BTC-USD", end, start)
+    sql = [statement for statement, _ in connection._cursor.executions]
+    assert "product_id=%s AND (anchor_second BETWEEN %s AND %s" in sql[0]
+    assert "product_id=%s AND changed_second BETWEEN %s AND %s" in sql[1]
+    assert "product_id=%s AND checkpoint_hour BETWEEN %s AND %s" in sql[2]
+    assert "product_id=%s AND window_start <= %s AND window_end >= %s" in sql[3]
+
+
+def test_remove_cache_rejects_missing_hour_and_keeps_dump(tmp_path: Path):
+    shard_dir = tmp_path / "c1e89eded9915e1c75a18911298edfbbbe4050ce" / "2026-04-24"
+    shard_dir.mkdir(parents=True)
+    dump = shard_dir / "BTC-USD.dump"
+    dump.write_bytes(b"dump")
+    (shard_dir / "BTC-USD.json").write_text("{}")
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+
+    with pytest.raises(UnverifiedRemoteArtifact, match="daily normalized inventory"):
+        remove_verified_shard_cache(
+            _shard(), tmp_path, expected_artifacts=artifacts[:-1], receipts=receipts[:-1], connection=None,
+        )
+    assert dump.exists()
+
+
+def test_remove_cache_rejects_partition_for_another_date(tmp_path: Path):
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+    wrong_date = Path(str(artifacts[0]).replace("date=2026-04-24", "date=2026-04-25"))
+    wrong_date.parent.mkdir(parents=True)
+    artifacts[0].replace(wrong_date)
+    artifacts[0] = wrong_date
+
+    with pytest.raises(UnverifiedRemoteArtifact, match="path does not match"):
+        remove_verified_shard_cache(
+            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+        )
 
 
 def test_remove_cache_rejects_floating_upload_receipt(tmp_path: Path):
-    artifact = tmp_path / "part.parquet"
-    artifact.write_bytes(b"normalized")
+    artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
+    receipts[0]["revision"] = "main"
     with pytest.raises(UnverifiedRemoteArtifact, match="commit-pinned"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=[artifact],
-            receipts=[{"artifact_path": str(artifact), "remote_sha256": sha256_file(artifact), "commit_sha": "main", "success": True}],
-            connection=None,
+            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
         )
