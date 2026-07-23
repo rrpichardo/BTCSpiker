@@ -15,6 +15,7 @@ from btcspiker_ml.search import SearchState, run_stage
 from scripts.run_experiments import (
     _TemporalCalibrationSplit,
     _candidate_model,
+    _evaluate_development_trial,
     _roundtrip_feature_parity,
     build_stage_trials,
 )
@@ -86,6 +87,35 @@ def _write_config(
     path = tmp_path / "experiment.yaml"
     path.write_text(yaml.safe_dump(raw))
     return path, raw
+
+
+def test_evaluate_development_trial_limits_threads_to_avoid_oversubscription(tmp_path: Path, monkeypatch):
+    """HistGradientBoosting (and BLAS under the hood) ignore sklearn's n_jobs and
+    thread internally by default, defeating the "one thread per trial, trial-level
+    scheduling owns concurrency" contract max_parallel_jobs relies on."""
+    path, raw = _write_config(tmp_path)
+    config = load_experiment_config(path)
+    import scripts.run_experiments as runner
+
+    recorded_limits: list[int] = []
+
+    class _RecordingLimiter:
+        def __init__(self, limits=None, user_api=None):
+            recorded_limits.append(limits)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(runner.threadpoolctl, "threadpool_limits", _RecordingLimiter)
+    frame = pd.read_parquet(raw["storage"]["existing_data"])
+    spec = {"id": "trial-0", "model_family": "logistic", "params": {}, "deployable": True}
+
+    runner._evaluate_development_trial(config, raw, "linear", spec, frame)
+
+    assert 1 in recorded_limits
 
 
 def test_stage_trial_plans_consume_configured_budgets_families_and_search_params(

@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import psutil
+import threadpoolctl
 import yaml
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 from sklearn.dummy import DummyClassifier
@@ -277,54 +278,60 @@ def _evaluate_development_trial(
     development_rows: set[int] = set()
     fold_boundaries: list[dict[str, Any]] = []
 
-    for fold_number, fold in enumerate(plan.folds):
-        train = np.asarray(fold.train)
-        validation = np.asarray(fold.validation)
-        development_rows.update(fold.train)
-        development_rows.update(fold.validation)
-        model = _candidate_model(spec, config)
-        before_fit = time.perf_counter()
-        model.fit(source.iloc[train], target[train])
-        fit_seconds += time.perf_counter() - before_fit
-        before_inference = time.perf_counter()
-        prediction = model.predict_proba(source.iloc[validation])[:, 1]
-        duration = time.perf_counter() - before_inference
-        inference_seconds += duration
-        per_row_latency_ms.extend([duration * 1_000 / len(validation)] * len(validation))
-        metric = evaluate_predictions(target[validation], prediction, timestamps.iloc[validation], threshold=0.5)
-        fold_metrics[f"fold_{fold_number}_pr_auc"] = metric.pr_auc
-        scores.append(metric.pr_auc)
-        # A prevalence-constant predictor scores PR-AUC == prevalence, so this
-        # counts the folds that actually beat the baseline qualification uses.
-        folds_won += int(metric.pr_auc > metric.prevalence)
-        # The baseline refits per fold and predicts that fold's training
-        # prevalence, so the comparison has to move with it.  Scoring against a
-        # single pooled constant instead measures prevalence drift, which
-        # penalises every model equally — including the baseline itself.
-        fold_baseline = np.full(len(validation), float(target[train].mean()))
-        candidate_brier_total += brier_score_loss(target[validation], prediction) * len(validation)
-        baseline_brier_total += brier_score_loss(target[validation], fold_baseline) * len(validation)
-        oof_parts.append(pd.DataFrame({
-            "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
-            "target": target[validation], "prediction": prediction, "fold": fold_number,
-        }))
-        fold_boundaries.append({
-            "fold": fold_number, "train_rows": len(train), "validation_rows": len(validation),
-            "train_start": str(timestamps.iloc[train[0]]), "train_end": str(timestamps.iloc[train[-1]]),
-            "validation_start": str(timestamps.iloc[validation[0]]), "validation_end": str(timestamps.iloc[validation[-1]]),
-        })
+    # Trial-level scheduling (max_parallel_jobs) owns concurrency; every estimator
+    # must stay single-threaded or concurrent trials oversubscribe the machine.
+    # n_jobs=1 alone doesn't guarantee this: HistGradientBoosting has no n_jobs
+    # parameter at all and threads internally via OpenMP by default, and the BLAS
+    # backend behind plain matrix ops threads independently of any sklearn param.
+    with threadpoolctl.threadpool_limits(limits=1):
+        for fold_number, fold in enumerate(plan.folds):
+            train = np.asarray(fold.train)
+            validation = np.asarray(fold.validation)
+            development_rows.update(fold.train)
+            development_rows.update(fold.validation)
+            model = _candidate_model(spec, config)
+            before_fit = time.perf_counter()
+            model.fit(source.iloc[train], target[train])
+            fit_seconds += time.perf_counter() - before_fit
+            before_inference = time.perf_counter()
+            prediction = model.predict_proba(source.iloc[validation])[:, 1]
+            duration = time.perf_counter() - before_inference
+            inference_seconds += duration
+            per_row_latency_ms.extend([duration * 1_000 / len(validation)] * len(validation))
+            metric = evaluate_predictions(target[validation], prediction, timestamps.iloc[validation], threshold=0.5)
+            fold_metrics[f"fold_{fold_number}_pr_auc"] = metric.pr_auc
+            scores.append(metric.pr_auc)
+            # A prevalence-constant predictor scores PR-AUC == prevalence, so this
+            # counts the folds that actually beat the baseline qualification uses.
+            folds_won += int(metric.pr_auc > metric.prevalence)
+            # The baseline refits per fold and predicts that fold's training
+            # prevalence, so the comparison has to move with it.  Scoring against a
+            # single pooled constant instead measures prevalence drift, which
+            # penalises every model equally — including the baseline itself.
+            fold_baseline = np.full(len(validation), float(target[train].mean()))
+            candidate_brier_total += brier_score_loss(target[validation], prediction) * len(validation)
+            baseline_brier_total += brier_score_loss(target[validation], fold_baseline) * len(validation)
+            oof_parts.append(pd.DataFrame({
+                "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
+                "target": target[validation], "prediction": prediction, "fold": fold_number,
+            }))
+            fold_boundaries.append({
+                "fold": fold_number, "train_rows": len(train), "validation_rows": len(validation),
+                "train_start": str(timestamps.iloc[train[0]]), "train_end": str(timestamps.iloc[train[-1]]),
+                "validation_start": str(timestamps.iloc[validation[0]]), "validation_end": str(timestamps.iloc[validation[-1]]),
+            })
 
-    oof = pd.concat(oof_parts, ignore_index=True).sort_values("row_index")
-    tau = _best_threshold(oof["target"].to_numpy(), oof["prediction"].to_numpy())
-    if baseline_brier_total <= 0.0:
-        raise ValueError("prevalence baseline has no Brier score to compare against")
-    development_brier_ratio = float(candidate_brier_total / baseline_brier_total)
-    fitted = _candidate_model(spec, config)
-    development = np.asarray(sorted(development_rows), dtype=int)
-    before_refit = time.perf_counter()
-    fitted.fit(source.iloc[development], target[development])
-    fit_seconds += time.perf_counter() - before_refit
-    parity_passed = _roundtrip_feature_parity(fitted, source.iloc[development[: min(256, len(development))]])
+        oof = pd.concat(oof_parts, ignore_index=True).sort_values("row_index")
+        tau = _best_threshold(oof["target"].to_numpy(), oof["prediction"].to_numpy())
+        if baseline_brier_total <= 0.0:
+            raise ValueError("prevalence baseline has no Brier score to compare against")
+        development_brier_ratio = float(candidate_brier_total / baseline_brier_total)
+        fitted = _candidate_model(spec, config)
+        development = np.asarray(sorted(development_rows), dtype=int)
+        before_refit = time.perf_counter()
+        fitted.fit(source.iloc[development], target[development])
+        fit_seconds += time.perf_counter() - before_refit
+        parity_passed = _roundtrip_feature_parity(fitted, source.iloc[development[: min(256, len(development))]])
     model_size_bytes = len(pickle.dumps(fitted, protocol=pickle.HIGHEST_PROTOCOL))
     peak_rss_mb = max(rss_before, psutil.Process().memory_info().rss) / (1024 * 1024)
     total_seconds = time.perf_counter() - started
