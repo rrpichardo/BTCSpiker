@@ -4,7 +4,7 @@
 #
 # This is the runtime entrypoint for the project.
 # Run from repo root:
-#   cp .env.example .env   # optional: override defaults
+#   cp .env.example .env   # required: mounted read-only by the api
 #   docker compose up -d
 #
 # Services overview and healthcheck strategy
@@ -19,14 +19,25 @@
 # featurizer     — Rolling-feature consumer (ticks.raw → ticks.features); same reasoning
 # predict-bridge — Runtime consumer (ticks.features → /predict); retries 5xx/network
 #                  failures and commits offsets only after the API hop succeeds
+# materializer   — Kafka-backed predictions read model; healthcheck via python
+#                  urllib → /health
+# ui             — nginx-served web UI + same-origin API proxy; healthcheck via wget
 # kafka-exporter — Prometheus exporter; built from scratch image, no shell/wget
 #                  available for CMD-style healthcheck — omitted intentionally
 # prometheus     — Metrics collector; healthcheck via wget → /-/healthy
 # grafana        — Dashboard; healthcheck via wget → /api/health (checks DB ready)
 #
-# Env vars are documented in .env.example. All defaults are set so the stack
-# runs out-of-the-box without a .env file present.
+# Env vars are documented in .env.example. The .env file must exist because the
+# api mounts it read-only to report saved settings alongside active settings.
+#
+# Project name is pinned below so `docker compose` always targets the same
+# stack regardless of which directory or worktree it's invoked from — without
+# this, Compose derives the project name from the current directory's
+# basename, so running from a worktree (e.g. .claude/worktrees/phase2-bridge)
+# would silently spin up a second, separate stack on the same ports.
 # =============================================================================
+
+name: btcspiker
 
 services:
 
@@ -71,8 +82,10 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: |
       "
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.raw      --partitions 1 --replication-factor 1
-      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.features --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.raw         --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.features    --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.predictions --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic ticks.outcomes    --partitions 1 --replication-factor 1
       echo 'Topics created.'
       "
     restart: "no"
@@ -141,6 +154,35 @@ services:
         delay: 5s
     restart: on-failure
 
+  # ---- One-shot: bridge a qualified tournament candidate into this server's
+  # registry (see scripts/publish_candidate_to_registry.py). Opt-in only —
+  # never runs on `up`; invoke explicitly with
+  #   docker compose --profile candidate run --rm candidate-publish <args>
+  candidate-publish:
+    profiles: ["candidate"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      # MLflow's file-based artifact store writes directly to the artifact
+      # URI on the client's own filesystem, so the target-side run this
+      # script creates must share the same volume the `mlflow` and `api`
+      # services read from — required, not optional.
+      - mlflow-data:/mlruns
+      - ./scripts:/app/scripts:ro
+      - ./.artifacts:/app/.artifacts:ro
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    entrypoint: ["python", "scripts/publish_candidate_to_registry.py"]
+
   # ---- FastAPI prediction service ----
   api:
     build:
@@ -159,6 +201,21 @@ services:
       MODEL_STAGE: ${MODEL_STAGE:-Production}
       # Candidate smoke test (Staging is explicit; Production remains default):
       # MODEL_NAME=btc-volatility-candidate MODEL_STAGE=Staging docker compose up -d --build api predict-bridge
+      SETTINGS_ENV_FILE: ${SETTINGS_ENV_FILE:-/app/runtime/.env}
+      SETTINGS_CONFIG_FILE: ${SETTINGS_CONFIG_FILE:-/app/runtime/config.yaml}
+      SYSTEM_PROBE_API_URL: ${SYSTEM_PROBE_API_URL:-http://localhost:8000/health}
+      SYSTEM_PROBE_GRAFANA_URL: ${SYSTEM_PROBE_GRAFANA_URL:-http://grafana:3000/api/health}
+      SYSTEM_PROBE_PROMETHEUS_URL: ${SYSTEM_PROBE_PROMETHEUS_URL:-http://prometheus:9090/-/healthy}
+      SYSTEM_PROBE_MLFLOW_URL: ${SYSTEM_PROBE_MLFLOW_URL:-http://mlflow:5000/health}
+      SYSTEM_PROBE_MATERIALIZER_URL: ${SYSTEM_PROBE_MATERIALIZER_URL:-http://materializer:8090/health}
+      SYSTEM_OPEN_API_URL: ${SYSTEM_OPEN_API_URL:-http://localhost:8000/docs}
+      SYSTEM_OPEN_GRAFANA_URL: ${SYSTEM_OPEN_GRAFANA_URL:-http://localhost:3000}
+      SYSTEM_OPEN_PROMETHEUS_URL: ${SYSTEM_OPEN_PROMETHEUS_URL:-http://localhost:9090}
+      SYSTEM_OPEN_MLFLOW_URL: ${SYSTEM_OPEN_MLFLOW_URL:-http://localhost:5001}
+      SYSTEM_OPEN_MATERIALIZER_URL: ${SYSTEM_OPEN_MATERIALIZER_URL:-http://localhost:8090/health}
+      SYSTEM_PROBE_TIMEOUT: ${SYSTEM_PROBE_TIMEOUT:-2}
+      SYSTEM_STATUS_CACHE_SECONDS: ${SYSTEM_STATUS_CACHE_SECONDS:-5}
+      SYSTEM_MATERIALIZER_STALE_SECONDS: ${SYSTEM_MATERIALIZER_STALE_SECONDS:-60}
     # Mount the shared MLflow artifact volume so the API can resolve
     # `models:/...` URIs directly from /mlruns/artifacts on disk. Without this
     # mount, the registry lookup still succeeds over REST but the artifact
@@ -168,6 +225,8 @@ services:
     # a read-only mount causes an Errno 30 and the same silent pickle fallback.
     volumes:
       - mlflow-data:/mlruns
+      - ./.env:/app/runtime/.env:ro
+      - ./config.yaml:/app/runtime/config.yaml:ro
     depends_on:
       kafka:
         condition: service_healthy
@@ -263,8 +322,10 @@ services:
         condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_OUTCOMES: ticks.outcomes
     volumes:
       - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
     command:
       - python
       - -u
@@ -295,6 +356,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:29092
       TOPIC_FEATURES: ticks.features
+      TOPIC_PREDICTIONS: ticks.predictions
       KAFKA_GROUP_ID: predict-bridge
       PREDICT_API_URL: http://api:8000/predict
       PREDICT_API_HEALTH_URL: http://api:8000/health
@@ -307,6 +369,63 @@ services:
         limits:
           memory: 512M
           cpus: "0.5"
+    restart: on-failure
+
+  # ---- Prediction read model: ticks.predictions → SQLite + HTTP ----
+  # Kafka is the source of truth; this named-volume SQLite database is a
+  # disposable projection that the materializer rebuilds by replaying Kafka.
+  materializer:
+    build:
+      context: .
+      dockerfile: materializer/Dockerfile
+    ports:
+      - "8090:8090"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      TOPIC_PREDICTIONS: ticks.predictions
+      TOPIC_OUTCOMES: ticks.outcomes
+      KAFKA_GROUP_ID: materializer
+      KAFKA_OUTCOMES_GROUP_ID: materializer-outcomes
+      PREDICTIONS_DB_PATH: /data/predictions.db
+      # Evaluation-layer knobs (materializer/evaluation.py) — safe defaults
+      # baked in here so they're discoverable without reading the source.
+      MIN_POSITIVES: ${MIN_POSITIVES:-10}
+      MIN_NOTE_SAMPLE_N: ${MIN_NOTE_SAMPLE_N:-1000}
+      DRIFT_PR_AUC_RATIO: ${DRIFT_PR_AUC_RATIO:-0.7}
+      BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
+    volumes:
+      - predictions-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8090/health')); raise SystemExit(0 if data.get('ok') is True else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: on-failure
+
+  # ---- Web UI + same-origin proxy ----
+  ui:
+    build:
+      context: ui
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
+    depends_on:
+      api:
+        condition: service_healthy
+      materializer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: on-failure
 
   # ---- Kafka exporter (consumer-group lag → Prometheus) ----
@@ -380,3 +499,4 @@ volumes:
   mlflow-data:
   prometheus-data:
   grafana-data:
+  predictions-data:

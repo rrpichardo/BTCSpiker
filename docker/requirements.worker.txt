@@ -3,3 +3,6 @@ websockets>=12.0
 python-dotenv>=1.0
 pyarrow>=14.0
 pyyaml>=6.0
+# btcspiker_ml.features (FeatureEngine, imported by features/featurizer.py
+# for train/serve parity) imports pandas unconditionally at module load.
+pandas>=2.0

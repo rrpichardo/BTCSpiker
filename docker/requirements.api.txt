@@ -2,7 +2,10 @@ fastapi>=0.110
 uvicorn>=0.29
 # lr_pipeline.pkl was serialized under sklearn 1.2.2; loads correctly in 1.4+ with a cosmetic
 # version-mismatch warning. MLflow 2.12.2 re-serializes the model at 1.4+ when log_model is called.
-scikit-learn>=1.4
+# Pinned exactly to the host training env (1.6.1) so a candidate model registered from the
+# tournament can be loaded by the API without minor-version pickle skew — the non-legacy
+# selection path has no pickle fallback and would hard-fail at boot.
+scikit-learn==1.6.1
 numpy
 prometheus-client>=0.20
 # mlflow pinned to match the tracking server image in docker-compose.yaml

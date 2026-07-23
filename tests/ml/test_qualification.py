@@ -203,7 +203,9 @@ def _qualification_command(
 def test_qualification_cli_derives_evidence_and_promotes_only_recorded_winner_once(
     tmp_path: Path,
 ):
-    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(tmp_path)
+    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(
+        tmp_path
+    )
     command = [
         *_qualification_command(run_id, state_path, artifact_root, tracking_uri),
     ]
@@ -215,7 +217,9 @@ def test_qualification_cli_derives_evidence_and_promotes_only_recorded_winner_on
     assert len(staging) == 1
     assert staging[0].run_id == run_id
     assert "Production unchanged" in first.stdout
-    assert not client.get_latest_versions("btc-volatility-candidate", stages=["Production"])
+    assert not client.get_latest_versions(
+        "btc-volatility-candidate", stages=["Production"]
+    )
     saved_state = SearchState.load(state_path)
     assert saved_state.final_holdout_accessed_at is not None
 
@@ -225,7 +229,9 @@ def test_qualification_cli_derives_evidence_and_promotes_only_recorded_winner_on
 
 
 def test_qualification_cli_refuses_caller_authored_evidence_file(tmp_path: Path):
-    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(tmp_path)
+    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(
+        tmp_path
+    )
     fabricated = tmp_path / "fabricated-evidence.json"
     fabricated.write_text(json.dumps(_passing_evidence().__dict__))
     command = _qualification_command(run_id, state_path, artifact_root, tracking_uri)
@@ -271,7 +277,9 @@ def test_qualification_cli_rejects_wrong_lineage_before_opening_holdout(tmp_path
 def test_qualification_cli_rejects_recorded_run_when_lineage_mismatches_state(
     tmp_path: Path,
 ):
-    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(tmp_path)
+    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(
+        tmp_path
+    )
     client = mlflow.tracking.MlflowClient(tracking_uri)
     client.set_tag(run_id, "dataset_id", "other-dataset")
 
@@ -287,7 +295,9 @@ def test_qualification_cli_rejects_recorded_run_when_lineage_mismatches_state(
 
 
 def test_qualification_cli_requires_immutable_search_config_artifact(tmp_path: Path):
-    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(tmp_path)
+    run_id, _, state_path, artifact_root, tracking_uri = _qualification_fixture(
+        tmp_path
+    )
     client = mlflow.tracking.MlflowClient(tracking_uri)
     Path(client.download_artifacts(run_id, "experiment-config.yaml")).unlink()
 

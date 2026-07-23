@@ -132,6 +132,17 @@ not authorize a registry or Production change.
 | Latency / runtime proof | No new tournament latency, replay, API, or rollback execution was performed in this final proof; the legacy runtime evidence above remains separate |
 | Local export | No `mlflow-exports/run_id=.../export-manifest.json` exists for this provisional candidate, so no production-run checksum claim is made |
 
+**Canonical corpus path.** The 788,465-row / 11.0-day figure above was bound
+from `~/Documents/BitcoinProjectTest/data/processed/features.parquet` — **not**
+this repo's own `data/processed/features.parquet`, which a stray
+`scripts/replay.py --out` run (default output path) has since overwritten
+with an unrelated few-day slice. Always point `BTCSPIKER_EXISTING_DATA` at
+the `Documents/BitcoinProjectTest/` absolute path for existing-data corpus
+work; a read-only backup lives alongside it at
+`features.11d.backup.parquet`. Treat any row/day count read off this repo's
+own `data/processed/features.parquet` as unverified until you've confirmed
+what last wrote to it.
+
 The 30-day credibility threshold is a hard Staging requirement. The 11-day
 corpus therefore blocks qualification only; it does not pause the completed
 research workflow or justify opening the holdout. The development winner may

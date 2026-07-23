@@ -32,3 +32,9 @@ mlruns/
 
 # Claude Code local state (agent worktrees, session data) — ephemeral tooling, not project code
 .claude/
+
+# Remember plugin: keep the memory .md files, ignore its churn
+.remember/logs/
+.remember/tmp/
+.last-git-backup-ts
+.git-backup-remote

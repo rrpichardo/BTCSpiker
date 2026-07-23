@@ -10,14 +10,16 @@ Usage:
 
 import json
 import logging
+import math
 import os
 import signal
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from numbers import Real
 
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, KafkaError, Message, Producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +33,7 @@ KAFKA_BOOTSTRAP = (
     or "localhost:9092"
 )
 FEATURES_TOPIC = os.getenv("TOPIC_FEATURES", "ticks.features")
+TOPIC_PREDICTIONS = os.getenv("TOPIC_PREDICTIONS", "ticks.predictions")
 GROUP_ID = os.getenv("KAFKA_GROUP_ID", "predict-bridge")
 API_URL = os.getenv("PREDICT_API_URL", "http://localhost:8000/predict")
 API_HEALTH_URL = os.getenv("PREDICT_API_HEALTH_URL", "http://localhost:8000/health")
@@ -38,7 +41,19 @@ API_TIMEOUT = float(os.getenv("PREDICT_API_TIMEOUT", "10"))
 STARTUP_TIMEOUT = float(os.getenv("STARTUP_TIMEOUT", "30"))
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "2"))
 
-NON_MODEL_FIELDS = {"product_id", "timestamp", "future_vol_60s", "vol_spike"}
+# feature_id/stream_epoch are read separately (see feature_message.get(...)
+# below) to stamp provenance on outgoing predictions; forwarding them into
+# the /predict row would make the API 422 on every request, since it treats
+# any key outside {"ts", "feature_set_id", "feature_schema_version"} as a
+# numeric model feature.
+NON_MODEL_FIELDS = {
+    "product_id",
+    "timestamp",
+    "future_vol_60s",
+    "vol_spike",
+    "feature_id",
+    "stream_epoch",
+}
 
 
 def _wait_for_kafka(consumer: Consumer, timeout: float) -> None:
@@ -91,7 +106,14 @@ def _build_row(message: dict, kafka_timestamp_ms: int | None) -> dict:
     return row
 
 
-def _post_prediction(row: dict) -> tuple[bool, str]:
+def _post_prediction(row: dict) -> tuple[bool, str, dict | None]:
+    """POST a feature row to the prediction API.
+
+    Returns (success, detail, response_payload). response_payload is only
+    populated when the API returned 2xx with a parseable scored body — a
+    non-retriable 4xx (row skipped) still counts as "success" but carries
+    no payload, matching the existing skip semantics.
+    """
     payload = json.dumps({"rows": [row]}).encode("utf-8")
     req = urllib.request.Request(
         API_URL,
@@ -103,15 +125,106 @@ def _post_prediction(row: dict) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             if 200 <= resp.status < 300:
-                return True, ""
-            return False, f"unexpected status {resp.status}"
+                body = resp.read().decode("utf-8")
+                try:
+                    response_payload = json.loads(body)
+                    if not isinstance(response_payload, dict):
+                        raise ValueError("body must be a mapping")
+
+                    scores = response_payload.get("scores")
+                    if not isinstance(scores, list) or len(scores) != 1:
+                        raise ValueError("scores must contain exactly one value")
+
+                    score = scores[0]
+                    if (
+                        isinstance(score, bool)
+                        or not isinstance(score, Real)
+                        or (isinstance(score, float) and not math.isfinite(score))
+                    ):
+                        raise ValueError("score must be a finite number")
+
+                    for field in ("ts", "model_variant", "version"):
+                        value = response_payload.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            raise ValueError(f"{field} must be a nonempty string")
+                except (json.JSONDecodeError, ValueError) as exc:
+                    return False, f"malformed API response: {exc}", None
+                return True, "", response_payload
+            return False, f"unexpected status {resp.status}", None
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         if 400 <= exc.code < 500:
-            return True, f"non-retriable API error {exc.code}: {body}"
-        return False, f"retriable API error {exc.code}: {body}"
+            return True, f"non-retriable API error {exc.code}: {body}", None
+        return False, f"retriable API error {exc.code}: {body}", None
     except urllib.error.URLError as exc:
-        return False, f"API request failed: {exc}"
+        return False, f"API request failed: {exc}", None
+
+
+def _build_prediction_event(
+    msg: Message,
+    row: dict,
+    response_payload: dict,
+    *,
+    feature_ts: str | None,
+    feature_id: str | None,
+    stream_epoch: int | None,
+) -> dict:
+    """Assemble the PredictionEvent for the consumed features message.
+
+    event_id is derived from the consumed message's own topic/partition/offset
+    so retries of the same message produce the same id (downstream dedup key).
+
+    feature_id/stream_epoch come from the raw consumed feature message (old-
+    format backlog messages lack them, so they fall back to null rather than
+    crashing). tau/run_id come from the /predict response payload.
+    """
+    return {
+        "event_id": f"{msg.topic()}:{msg.partition()}:{msg.offset()}",
+        "source_partition": msg.partition(),
+        "source_offset": msg.offset(),
+        "feature_ts": feature_ts,
+        "feature_id": feature_id,
+        "stream_epoch": stream_epoch,
+        "api_ts": response_payload.get("ts"),
+        "score": response_payload["scores"][0],
+        "model_variant": response_payload.get("model_variant"),
+        "model_version": response_payload.get("version"),
+        "tau": response_payload.get("tau"),
+        "run_id": response_payload.get("run_id"),
+        "vol_60s": row.get("vol_60s"),
+        "spread_bps": row.get("spread_bps"),
+        "log_return": row.get("log_return"),
+        "trade_intensity_60s": row.get("trade_intensity_60s"),
+    }
+
+
+def _publish_prediction(producer: Producer, event: dict) -> bool:
+    """Produce the event and block until its delivery outcome is known."""
+    delivered = {"ok": False}
+
+    def _on_delivery(err, _msg) -> None:
+        if err is not None:
+            log.warning(
+                "Prediction event delivery failed for %s: %s", event["event_id"], err
+            )
+        else:
+            delivered["ok"] = True
+
+    producer.produce(
+        TOPIC_PREDICTIONS,
+        key=event["event_id"],
+        value=json.dumps(event).encode("utf-8"),
+        callback=_on_delivery,
+    )
+    producer.poll(0)
+    remaining = producer.flush(API_TIMEOUT)
+    if remaining:
+        log.warning(
+            "Prediction event publish timed out for %s (%d message(s) still queued)",
+            event["event_id"],
+            remaining,
+        )
+    return delivered["ok"]
 
 
 def main() -> None:
@@ -124,6 +237,7 @@ def main() -> None:
         }
     )
     consumer.subscribe([FEATURES_TOPIC])
+    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
 
     _wait_for_kafka(consumer, STARTUP_TIMEOUT)
     _wait_for_api(STARTUP_TIMEOUT)
@@ -164,19 +278,49 @@ def main() -> None:
                 consumer.commit(message=msg)
                 continue
 
-            success, detail = _post_prediction(row)
-            if not success:
-                log.warning("Prediction POST failed; retrying after backoff: %s", detail)
+            while not stop:
+                success, detail, response_payload = _post_prediction(row)
+                if success:
+                    break
+                log.warning(
+                    "Prediction POST failed; retrying after backoff: %s", detail
+                )
                 time.sleep(RETRY_BACKOFF)
+
+            if stop:
+                continue
+
+            if response_payload is None:
+                # Non-retriable 4xx: row skipped, no score to publish.
+                consumer.commit(message=msg)
+                sent += 1
+                log.warning("Prediction row skipped after client error: %s", detail)
+                continue
+
+            event = _build_prediction_event(
+                msg,
+                row,
+                response_payload,
+                feature_ts=feature_message.get("timestamp"),
+                feature_id=feature_message.get("feature_id"),
+                stream_epoch=feature_message.get("stream_epoch"),
+            )
+            while not stop and not _publish_prediction(producer, event):
+                log.warning(
+                    "Prediction event publish unconfirmed; retrying after backoff: %s",
+                    event["event_id"],
+                )
+                time.sleep(RETRY_BACKOFF)
+
+            if stop:
                 continue
 
             consumer.commit(message=msg)
             sent += 1
-            if detail:
-                log.warning("Prediction row skipped after client error: %s", detail)
-            elif sent % 100 == 0:
+            if sent % 100 == 0:
                 log.info("Sent %d prediction requests", sent)
     finally:
+        producer.flush(API_TIMEOUT)
         consumer.close()
         log.info("Bridge stopped.")
 

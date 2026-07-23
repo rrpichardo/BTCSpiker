@@ -63,7 +63,13 @@ def make_temporal_splits(
     # and one before its first validation window.  Otherwise the first fold
     # can have only the first row in training, making the class check
     # impossible to satisfy for a binary classifier.
-    first_validation_start = int(np.searchsorted(ordered_ts.asi8, (ordered_ts[0] + 2 * embargo).value, side="left"))
+    embargo_floor = int(np.searchsorted(ordered_ts.asi8, (ordered_ts[0] + 2 * embargo).value, side="left"))
+    # That floor is a fixed interval, so on a real corpus it left fold 0
+    # generalising from minutes of history to the rest of the run — a loss
+    # against a constant predictor by construction, no matter how much data
+    # the search was given.  Open the window on an equal block instead, so
+    # every fold trains on a share of the development span.
+    first_validation_start = max(embargo_floor, development_end // (folds + 1))
     available_validation_rows = development_end - first_validation_start
     chunk = available_validation_rows // folds
     if first_validation_start == 0 or chunk == 0:

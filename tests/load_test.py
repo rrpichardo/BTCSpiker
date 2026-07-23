@@ -17,6 +17,7 @@ SAMPLE_ROW = {
     "spread_mean_60s": 1.2,
 }
 
+
 def send_request(url: str, _index: int) -> tuple[int, float]:
     t0 = time.perf_counter()
     r = requests.post(f"{url}/predict", json={"rows": [SAMPLE_ROW]}, timeout=10)
@@ -33,10 +34,14 @@ def main() -> int:
     if args.requests < 1 or args.concurrency < 1:
         parser.error("--requests and --concurrency must be positive")
     base_url = args.url.rstrip("/")
-    print(f"Sending {args.requests} requests to {base_url}/predict at concurrency {args.concurrency} ...\n")
+    print(
+        f"Sending {args.requests} requests to {base_url}/predict at concurrency {args.concurrency} ...\n"
+    )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        results = list(pool.map(lambda index: send_request(base_url, index), range(args.requests)))
+        results = list(
+            pool.map(lambda index: send_request(base_url, index), range(args.requests))
+        )
 
     codes = [r[0] for r in results]
     latencies = sorted([r[1] for r in results])

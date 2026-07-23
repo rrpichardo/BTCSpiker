@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from btcspiker_ml.storage import atomic_publish, ensure_capacity, prune_cache, sha256_file
+from btcspiker_ml.storage import (
+    atomic_publish,
+    ensure_capacity,
+    prune_cache,
+    sha256_file,
+)
 
 
 def test_atomic_publish_verifies_bytes(tmp_path: Path):
@@ -18,7 +23,9 @@ def test_atomic_publish_verifies_bytes(tmp_path: Path):
 
 
 def test_ensure_capacity_raises_when_disk_full(tmp_path: Path, monkeypatch):
-    fake_usage = namedtuple("usage", ["total", "used", "free"])(total=100, used=99, free=1)
+    fake_usage = namedtuple("usage", ["total", "used", "free"])(
+        total=100, used=99, free=1
+    )
     monkeypatch.setattr(shutil, "disk_usage", lambda path: fake_usage)
 
     with pytest.raises(OSError, match="insufficient free space"):
@@ -44,7 +51,9 @@ def test_prune_cache_removes_oldest_files_first(tmp_path: Path):
     assert remaining == {"newest.bin"}
 
 
-def test_atomic_publish_cleans_up_temp_file_on_copy_failure(tmp_path: Path, monkeypatch):
+def test_atomic_publish_cleans_up_temp_file_on_copy_failure(
+    tmp_path: Path, monkeypatch
+):
     source = tmp_path / "source.parquet"
     source.write_bytes(b"data")
     destination = tmp_path / "artifacts" / "part.parquet"

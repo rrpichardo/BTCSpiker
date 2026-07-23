@@ -6,8 +6,7 @@ from btcspiker_ml.features import FEATURE_SETS, FeatureEngine, materialize_featu
 
 def test_microstructure_v1_materializes_the_frozen_level2_schema(raw_ticks):
     level2_ticks = [
-        {**tick, "bid_size": "2.0", "ask_size": "1.0"}
-        for tick in raw_ticks
+        {**tick, "bid_size": "2.0", "ask_size": "1.0"} for tick in raw_ticks
     ]
 
     materialized = materialize_features(pd.DataFrame(level2_ticks), "microstructure_v1")
@@ -16,7 +15,9 @@ def test_microstructure_v1_materializes_the_frozen_level2_schema(raw_ticks):
 
 
 def test_microstructure_v1_reports_missing_level2_inputs(raw_ticks):
-    with pytest.raises(ValueError, match=r"missing raw columns: \['ask_size', 'bid_size'\]"):
+    with pytest.raises(
+        ValueError, match=r"missing raw columns: \['ask_size', 'bid_size'\]"
+    ):
         materialize_features(pd.DataFrame(raw_ticks), "microstructure_v1")
 
 
@@ -41,7 +42,7 @@ def test_features_do_not_change_when_future_ticks_are_modified(raw_ticks):
     cutoff = len(raw_ticks) // 2
     original = materialize_features(pd.DataFrame(raw_ticks), "multi_window_v1")
     mutated_ticks = [dict(row) for row in raw_ticks]
-    for row in mutated_ticks[cutoff + 1:]:
+    for row in mutated_ticks[cutoff + 1 :]:
         row["price"] = str(float(row["price"]) * 10)
     mutated = materialize_features(pd.DataFrame(mutated_ticks), "multi_window_v1")
 

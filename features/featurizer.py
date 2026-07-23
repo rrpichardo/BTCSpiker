@@ -1,9 +1,26 @@
 """
 Featurizer — live Kafka consumer.
 
-Each product is processed by the shared causal ``FeatureEngine``. It produces
-core_v1 features and only releases a row once its lookahead label has closed.
-Labelled rows are emitted to Kafka and Parquet in bounded batches.
+Each product is processed by the shared causal ``FeatureEngine`` (core_v1),
+wrapped per-product by ``ProductStream`` for feature_id/epoch bookkeeping.
+
+Two output streams per tick
+----------------------------
+1. ``FeatureEngine.ingest_with_tag`` computes this tick's features and
+   returns them immediately, tagged with a ``feature_id`` so the delayed
+   label below can be correlated back to it.
+2. The unlabeled row is emitted immediately to ticks.features (real-time
+   scoring — no delay, no label attached).
+3. Once a pending entry's lookahead window has closed
+   (current_ts - pending_ts >= horizon_sec), ``FeatureEngine`` emits its
+   labelled row paired with the original tag:
+     a. Slice price history over [pending_ts, pending_ts + horizon_sec].
+     b. Call compute_future_vol() on that slice.
+     c. Assign vol_spike label (1 if future_vol > threshold else 0).
+     d. Write the labelled row to the Parquet batch (training sink, unchanged
+        shape) and publish an OutcomeEvent (feature_id + label only) to
+        ticks.outcomes (Kafka).
+4. Flush Parquet batch every FLUSH_ROWS rows; also flush on clean shutdown.
 
 Parquet schema includes future_vol_60s and vol_spike label columns.
 
@@ -13,6 +30,7 @@ Usage
         [--config config.yaml] \\
         [--topic_in  ticks.raw] \\
         [--topic_out ticks.features] \\
+        [--topic_outcomes ticks.outcomes] \\
         [--output_parquet data/processed/features.parquet]
 """
 
@@ -20,10 +38,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 # Direct invocation (``python features/featurizer.py``) otherwise puts only
@@ -89,6 +109,94 @@ class ParquetSink(AtomicParquetSink):
         super().__init__(path=path, schema=PARQUET_SCHEMA, flush_rows=flush_rows)
 
 
+# ---------------------------------------------------------------------------
+# Per-product stream identity
+# ---------------------------------------------------------------------------
+
+class ProductStream:
+    """Wraps the shared ``FeatureEngine`` with feature_id/epoch bookkeeping
+    for one product_id.
+
+    Rolling-buffer correctness (resetting on timestamp regression) stays
+    entirely inside ``FeatureEngine`` — this class never reaches into it.
+    It tracks only the identity concerns the training/serving core has no
+    reason to know about: a monotonically increasing ``feature_id`` per
+    tick, and an ``epoch`` counter it bumps on its own regression check so a
+    replay restart's early feature_ids can't collide with the prior run's.
+    """
+
+    def __init__(self, feature_set_id: str, horizon_sec: float, vol_threshold: float, boot_id: str):
+        self.engine        = FeatureEngine(feature_set_id, horizon_sec, vol_threshold)
+        self.horizon_sec    = horizon_sec
+        self.vol_threshold  = vol_threshold
+        self.boot_id        = boot_id   # unique per process start, keeps feature_id
+                                         # collision-free across restarts of the
+                                         # stable, resuming consumer group
+        self.epoch: int = 0
+        self.seq:   int = 0
+        self._last_ts: float | None = None
+
+    def ingest(self, tick: dict) -> tuple[dict, list[tuple[dict, dict]]]:
+        """
+        Process one tick.
+
+        Returns
+        -------
+        (feature_row, drained) where:
+          feature_row : this tick's unlabeled feature dict, emitted
+                        immediately, stamped with feature_id/stream_epoch.
+          drained     : list of (labelled_row, outcome_event) pairs for
+                        pending entries whose lookahead window has just
+                        closed. labelled_row is the Parquet training row
+                        (unchanged shape); outcome_event is the delayed
+                        label event for ticks.outcomes.
+        """
+        ts = _parse_ts(tick["timestamp"])
+        if self._last_ts is not None and ts < self._last_ts:
+            log.warning(
+                "Timestamp regression for %s: bumping stream epoch (%s -> %s)",
+                tick.get("product_id", "unknown"), self._last_ts, ts,
+            )
+            self.epoch += 1
+            self.seq = 0
+        self._last_ts = ts
+
+        feature_id = f"{tick['product_id']}:{self.boot_id}:{self.epoch}:{self.seq}"
+        row, drained = self.engine.ingest_with_tag(tick, tag=(feature_id, self.epoch))
+        self.seq += 1
+
+        feature_row = {**row, "feature_id": feature_id, "stream_epoch": self.epoch}
+        return feature_row, [self._to_outcome(labelled, tag) for labelled, tag in drained]
+
+    def drain_remaining(self) -> list[tuple[dict, dict]]:
+        """On shutdown: flush pending rows that can still be labelled."""
+        drained = self.engine.drain_remaining_tagged()
+        return [self._to_outcome(labelled, tag) for labelled, tag in drained]
+
+    def _to_outcome(self, labelled: dict, tag: object) -> tuple[dict, dict]:
+        feature_id, epoch = tag
+        outcome_event = {
+            "feature_id":     feature_id,
+            "stream_epoch":   epoch,
+            "product_id":     labelled["product_id"],
+            "feature_ts":     labelled["timestamp"],
+            "future_vol_60s": labelled["future_vol_60s"],
+            "vol_spike":      labelled["vol_spike"],
+            "label_schema":   f"p85-{int(self.horizon_sec)}s-{self.vol_threshold}-v1",
+        }
+        return labelled, outcome_event
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_ts(ts_str: str) -> float:
+    # Truncate nanosecond precision to microseconds; fromisoformat supports up to 6 digits
+    ts_str = re.sub(r"(\.\d{6})\d+", r"\1", ts_str)
+    return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+
+
 def _delivery_report(err, _msg):
     if err:
         log.error("Delivery failed: %s", err)
@@ -114,10 +222,13 @@ def _wait_for_kafka(client, bootstrap: str, timeout: float) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Tick featurizer with 60s label delay")
+    parser = argparse.ArgumentParser(
+        description="Tick featurizer: immediate feature stream + 60s-delayed outcome events"
+    )
     parser.add_argument("--config",         default="config.yaml")
     parser.add_argument("--topic_in",       default=None, help="Override ticks.raw topic")
     parser.add_argument("--topic_out",      default=None, help="Override ticks.features topic")
+    parser.add_argument("--topic_outcomes", default=None, help="Override ticks.outcomes topic")
     parser.add_argument("--output_parquet", default=None, help="Override Parquet output path")
     parser.add_argument("--group-id",       default=None,
                         help="Kafka consumer group id. Default creates a throwaway rerunnable group.")
@@ -129,13 +240,20 @@ def main():
 
     cfg = load_config(args.config)
 
-    bootstrap     = os.getenv("KAFKA_BOOTSTRAP", cfg["kafka"]["bootstrap_servers"])
-    topic_in      = args.topic_in      or cfg["kafka"]["topic_raw"]
-    topic_out     = args.topic_out     or cfg["kafka"]["topic_features"]
-    group_id      = args.group_id or f"{cfg['kafka']['group_id']}-{uuid.uuid4().hex[:8]}"
-    horizon_sec   = float(cfg["features"]["label_horizon_sec"])
-    vol_threshold = float(cfg["features"]["vol_threshold"])
-    parquet_path  = Path(args.output_parquet or cfg["data"]["features_file"])
+    bootstrap      = os.getenv("KAFKA_BOOTSTRAP", cfg["kafka"]["bootstrap_servers"])
+    topic_in       = args.topic_in       or cfg["kafka"]["topic_raw"]
+    topic_out      = args.topic_out      or cfg["kafka"]["topic_features"]
+    topic_outcomes = args.topic_outcomes or os.getenv("TOPIC_OUTCOMES", "ticks.outcomes")
+    group_id       = args.group_id or f"{cfg['kafka']['group_id']}-{uuid.uuid4().hex[:8]}"
+    horizon_sec    = float(cfg["features"]["label_horizon_sec"])
+    vol_threshold  = float(cfg["features"]["vol_threshold"])
+    parquet_path   = Path(args.output_parquet or cfg["data"]["features_file"])
+
+    # Unconditional, independent of group_id: the deployed group_id is stable
+    # (ticks-featurizer) so a restart resumes mid-stream while ProductStream's
+    # epoch/seq would otherwise restart at 0 — boot_id keeps every feature_id
+    # collision-free across restarts (see ProductStream.ingest).
+    boot_id = uuid.uuid4().hex[:8]
 
     consumer = Consumer({
         "bootstrap.servers": bootstrap,
@@ -149,7 +267,7 @@ def main():
     _wait_for_kafka(consumer, bootstrap, args.startup_timeout)
     sink     = ParquetSink(parquet_path)
 
-    states: dict[str, FeatureEngine] = {}
+    states: dict[str, ProductStream] = {}
     stop = False
 
     def _shutdown(*_):
@@ -160,9 +278,11 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     log.info(
-        "Featurizer started | %s → %s | parquet=%s | group=%s | offset=%s | feature_set=%s horizon=%.0fs",
-        topic_in, topic_out, parquet_path, group_id,
-        "latest" if args.latest else "earliest", FEATURE_SET_ID, horizon_sec,
+        "Featurizer started | boot_id=%s | %s → %s (immediate) + %s (outcomes, %.0fs delay) | "
+        "parquet=%s | group=%s | offset=%s | feature_set=%s",
+        boot_id, topic_in, topic_out, topic_outcomes, horizon_sec,
+        parquet_path, group_id,
+        "latest" if args.latest else "earliest", FEATURE_SET_ID,
     )
 
     while not stop:
@@ -183,36 +303,56 @@ def main():
 
         pid = tick.get("product_id", "unknown")
         if pid not in states:
-            states[pid] = FeatureEngine(FEATURE_SET_ID, horizon_sec, vol_threshold)
+            states[pid] = ProductStream(FEATURE_SET_ID, horizon_sec, vol_threshold, boot_id)
 
         try:
-            labelled_rows = states[pid].ingest(tick)
+            feature_row, drained = states[pid].ingest(tick)
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Featurize error %s: %s | tick=%s", pid, exc, tick)
             continue
 
-        for row in labelled_rows:
-            value = json.dumps(row)
-            # Attempt Kafka publish; on failure log and continue so Parquet sink still gets the row
+        if feature_row is not None:
+            # Immediate, unlabeled feature row — published as soon as its tick arrives.
+            value = json.dumps(feature_row)
             try:
                 producer.produce(topic_out, key=pid, value=value, callback=_delivery_report)
                 producer.poll(0)
             except Exception as e:
                 log.warning("Kafka publish failed, continuing: %s", e)
-            sink.write(row)
-            log.debug("Emitted: %s", row)
+            log.debug("Emitted feature: %s", feature_row)
+
+        for labelled_row, outcome_event in drained:
+            sink.write(labelled_row)
+            # Delayed label event; on failure log and continue so Parquet sink still gets the row
+            outcome_value = json.dumps(outcome_event)
+            try:
+                producer.produce(
+                    topic_outcomes,
+                    key=outcome_event["feature_id"],
+                    value=outcome_value,
+                    callback=_delivery_report,
+                )
+                producer.poll(0)
+            except Exception as e:
+                log.warning("Kafka publish failed, continuing: %s", e)
+            log.debug("Emitted outcome: %s", outcome_event)
 
     # Drain any pending rows on shutdown
-    for pid, state in states.items():
-        for row in state.drain_remaining():
-            value = json.dumps(row)
+    for state in states.values():
+        for labelled_row, outcome_event in state.drain_remaining():
+            sink.write(labelled_row)
+            outcome_value = json.dumps(outcome_event)
             # Same graceful fallback on shutdown drain — don't lose Parquet rows if Kafka is down
             try:
-                producer.produce(topic_out, key=pid, value=value, callback=_delivery_report)
+                producer.produce(
+                    topic_outcomes,
+                    key=outcome_event["feature_id"],
+                    value=outcome_value,
+                    callback=_delivery_report,
+                )
                 producer.poll(0)
             except Exception as e:
                 log.warning("Kafka publish failed, continuing: %s", e)
-            sink.write(row)
 
     producer.flush()
     consumer.close()

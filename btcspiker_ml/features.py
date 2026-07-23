@@ -98,6 +98,30 @@ class FeatureEngine:
         self.pending: deque[dict[str, object]] = deque()
 
     def ingest(self, tick: dict) -> list[dict]:
+        _, drained = self.ingest_with_current(tick)
+        return drained
+
+    def ingest_with_current(self, tick: dict) -> tuple[dict, list[dict]]:
+        """Like ``ingest``, but also returns this tick's own unlabeled row.
+
+        Callers that need to publish a real-time (unlabeled) feature stream
+        alongside the delayed, labelled training rows use this instead of
+        ``ingest``. ``entry_timestamp < timestamp_buffer[-1]`` still triggers
+        the same reset as ``ingest`` — the row returned here is always built
+        after that reset, so a caller can't observe pre-reset state.
+        """
+        row, drained = self.ingest_with_tag(tick, tag=None)
+        return row, [labelled for labelled, _tag in drained]
+
+    def ingest_with_tag(self, tick: dict, tag: object) -> tuple[dict, list[tuple[dict, object]]]:
+        """Like ``ingest_with_current``, but attaches an opaque ``tag`` to this
+        tick's pending entry and returns ``(labelled_row, tag)`` pairs for every
+        entry that drains.
+
+        Lets a caller correlate a delayed label back to whatever identity it
+        assigned the tick when it arrived (e.g. a serving-layer ``feature_id``)
+        without this class knowing anything about that identity scheme.
+        """
         self._validate_tick(tick)
         timestamp = parse_timestamp(str(tick["timestamp"]))
         if self.timestamp_buffer and timestamp < self.timestamp_buffer[-1]:
@@ -121,13 +145,18 @@ class FeatureEngine:
         self._prune(timestamp)
 
         row = self._feature_row(tick, timestamp, price, midprice, spread, previous_price)
-        self.pending.append({"row": row, "ts": timestamp})
-        return self._drain(timestamp)
+        self.pending.append({"row": row, "ts": timestamp, "tag": tag})
+        return row, self._drain_tagged(timestamp)
 
     def drain_remaining(self) -> list[dict]:
         if not self.timestamp_buffer:
             return []
         return self._drain(self.timestamp_buffer[-1], force=True)
+
+    def drain_remaining_tagged(self) -> list[tuple[dict, object]]:
+        if not self.timestamp_buffer:
+            return []
+        return self._drain_tagged(self.timestamp_buffer[-1], force=True)
 
     def _feature_row(
         self, tick: dict, timestamp: float, price: float, midprice: float,
@@ -226,7 +255,10 @@ class FeatureEngine:
         return result
 
     def _drain(self, timestamp: float, force: bool = False) -> list[dict]:
-        emitted: list[dict] = []
+        return [row for row, _tag in self._drain_tagged(timestamp, force)]
+
+    def _drain_tagged(self, timestamp: float, force: bool = False) -> list[tuple[dict, object]]:
+        emitted: list[tuple[dict, object]] = []
         while self.pending:
             entry = self.pending[0]
             entry_timestamp = float(entry["ts"])
@@ -240,11 +272,12 @@ class FeatureEngine:
             future_volatility = compute_future_vol(future_window, self.horizon_seconds)
             if future_volatility is None:
                 continue
-            emitted.append({
+            labelled_row = {
                 **dict(entry["row"]),
                 "future_vol_60s": future_volatility,
                 "vol_spike": int(future_volatility > self.threshold),
-            })
+            }
+            emitted.append((labelled_row, entry.get("tag")))
         return emitted
 
     def _prune(self, timestamp: float) -> None:

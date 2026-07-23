@@ -114,3 +114,90 @@ production_status:
 - [ ] Passing candidate is Staging only; Production is unchanged.
 - [ ] MLflow evidence is checksum-exported to the local artifact root.
 - [ ] Replay, API, rollback, and latency verification results are recorded.
+
+## Dress-rehearsal result (2026-07-22) — not the goal itself
+
+This is a small-scale rehearsal on a 150,000-row / 22h11m local slice, run to
+prove the pipeline end-to-end before the real 30-day corpus is available. It
+does not count toward the checklist above and does not authorize any registry
+or Production change.
+
+```text
+result_status: blocked
+dataset_id: b0637b4dd26ea9fe45ca12b49b343af882c9f3447f7789c2e265a89ea58dd493
+dataset_manifest_path: .artifacts/btcspiker/rehearsal/manifests/existing-b0637b4dd26ea9fe45ca12b49b343af882c9f3447f7789c2e265a89ea58dd493.json
+source_sha256: 5470f3b50367a1c0438fd322eb48abef1b68197a0f11bc2dd10725e9eef3d0a4
+coverage_days: 2.0 (dataset); holdout slice itself spans ~0.92 days
+search_id: rehearsal-2026-07-21
+experiment_name: btc-volatility-tournament-rehearsal
+mlflow_tracking_uri: file:.artifacts/btcspiker/rehearsal/mlruns
+stage_runs:
+  baseline: {parent_run_id: 30f834f2b7804ef182ae226e4cf4e5fc, status: completed, best_pr_auc: 0.0792}
+  linear: {parent_run_id: 7b5909793d0b4602873e2c2681592d52, status: completed, best_pr_auc: 0.1105}
+  trees: {parent_run_id: 30c2b2d1a7484832a2fbccd1bd8fa1b6, status: completed, best_pr_auc: 0.1085}
+  ablation: {parent_run_id: 119974ba5dfd4e78a46b00081ee90fca, status: completed, best_pr_auc: 0.1071}
+  ensemble: {parent_run_id: 02fbcfc6fd294355ad314bce3d78bf5a, status: completed, best_pr_auc: 0.1053}
+  neural: {parent_run_id: f0b6a247bfb94de7aacc059bd53bd74b, status: skipped, reason: "torch not installed in this environment"}
+baseline_run_id: 6d016ad4335b4d4091aaa2091f7e3ac1
+best_candidate_run_id: 9c9d0db8aa584884979a0b8b30249f8a (linear stage, strongest recorded aggregate_pr_auc)
+development_fold_metrics: see stage_runs best_pr_auc above (per-stage best of purged_walkforward_v1 folds)
+bootstrap_interval: {lower: 0.0228, note: paired block bootstrap on holdout PR-AUC delta vs baseline}
+final_holdout: {opened: true, accessed_at: "2026-07-22T04:19:50.371014+00:00", metrics: {final_pr_auc_delta: 0.1234, folds_won: "2 of 5", brier_ratio: 1.828, event_f1_delta: 0.0102}}
+qualification: {qualification_data: false, passed: false, reasons: [coverage_under_thirty_days, fewer_than_four_folds_won, brier_regression_over_five_percent], staging_model_version: not_registered}
+latency: {p95_ms: 1.16, evidence: qualification-time inference only; no live serving/SLO test run (Phase 6 blocked, see below)}
+runtime_verification: {replay: not run, api: not run, rollback: not run}
+local_export: {path: none, manifest_verified: n/a, checksum_result: n/a}
+remaining_blockers: >
+  Two real gate failures beyond the expected coverage gap: the candidate won
+  only 2 of 5 development folds against baseline despite a strong positive
+  holdout PR-AUC delta (+0.123), and its Brier score regressed 82.8% vs
+  baseline (poor calibration despite good discrimination) — consistent with
+  overfitting on a 2-trial linear-stage budget and a small, class-imbalanced
+  slice (8.6% positive rate). publish_candidate_to_registry.py's own
+  --provisional check requires reasons == [coverage_under_thirty_days]
+  exactly, so it refused to run; Phase 6 (staging publish) was correctly
+  never attempted. Before trusting a future run's winner, consider a larger
+  linear/trees trial budget and a calibration step (e.g. Platt/isotonic) in
+  the tournament, not just a bigger dataset.
+production_status: unchanged
+```
+
+## Dress-rehearsal re-run after the calibration fix (2026-07-22)
+
+Same 150,000-row slice and same trial budget; the only change is the code.
+Two defects the first rehearsal exposed are fixed, and a third — the one the
+rehearsal exists to catch — is now caught before the holdout is spent.
+
+```text
+result_status: blocked (no candidate earned a stage win)
+search_id: rehearsal-2026-07-22
+final_holdout: {opened: false, accessed_at: null}
+baseline_run_id: 236c36a282304bf2b46e46757e0bf15f
+best_candidate_run_id: none — no candidate cleared the selection bars
+```
+
+**Calibration is fixed.** Candidates are now wrapped in a Platt calibrator
+fitted on a chronological tail of each training window. Measured across all
+five development folds on the real slice:
+
+| Model | Brier ratio raw | Brier ratio calibrated |
+|---|---|---|
+| `development_prevalence` (reference) | 1.000 | n/a — never calibrated |
+| `sgd_logistic` (alpha 27.14, the failed winner) | 2.305 | 1.027 |
+| `hist_gradient_boosting` | 2.129 | 1.007 |
+
+Every calibrated candidate now scores between 1.018 and 1.045, inside the
+1.05 bar that `brier_regression_over_five_percent` enforces.
+
+**The remaining failure is the data, not the code.** No candidate beats a
+constant prevalence predictor on four of five folds — the best reaches three.
+A 22-hour slice at 8.6% prevalence does not contain enough consistent signal,
+which is the point of running against 30+ days.
+
+**The holdout survived.** Selection now applies qualification's own bars, so
+no candidate was crowned, and `qualify_candidate.py` refuses to open the
+holdout for a run that never earned a stage win. The first rehearsal spent
+its one-shot holdout to discover a defect that development evidence already
+contained; this one did not. Expect the same protection to hold in Phase 7:
+if the 30-day corpus cannot produce a candidate that clears both bars, the
+run ends with no winner and a sealed holdout rather than a burned one.

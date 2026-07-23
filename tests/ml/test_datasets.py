@@ -14,7 +14,6 @@ from btcspiker_ml.datasets import (
     resolve_existing_dataset,
 )
 
-
 HANDOFF_SAMPLE = Path("handoff/data_sample/features_slice.parquet")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -58,7 +57,10 @@ def test_resolver_falls_back_to_handoff_sample(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     resolved = resolve_existing_dataset(None)
-    assert resolved == (tmp_path / "handoff" / "data_sample" / "features_slice.parquet").resolve()
+    assert (
+        resolved
+        == (tmp_path / "handoff" / "data_sample" / "features_slice.parquet").resolve()
+    )
 
 
 def test_inspection_reads_handoff_sample(tmp_path: Path):

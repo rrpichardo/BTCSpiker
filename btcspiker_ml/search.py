@@ -183,9 +183,12 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
                         extra_tags={"skip_reason": record.get("skip_reason", "trial skipped")},
                     )
                 elif outcome == "finished":
+                    metrics = dict(record.get("metrics", {}))
+                    eligible = _selection_eligible(metrics, values, stage)
+                    tracker.log_tags({"selection_eligible": eligible})
                     tracker.end_run("FINISHED")
-                    score = record.get("metrics", {}).get("aggregate_pr_auc")
-                    if score is not None and float(score) > state.best_scores.get(stage, float("-inf")):
+                    score = metrics.get("aggregate_pr_auc")
+                    if score is not None and eligible and float(score) > state.best_scores.get(stage, float("-inf")):
                         state.best_run_ids[stage] = child_id
                         state.best_scores[stage] = float(score)
                     if score is not None:
@@ -218,6 +221,33 @@ def run_stage(config: Mapping[str, Any], dataset_id: str, feature_set_id: str, s
     finally:
         state.remaining_wall_clock_seconds = max(0.0, state.remaining_wall_clock_seconds - (time.monotonic() - started))
         state.save(state_path)
+
+
+def _selection_eligible(metrics: Mapping[str, Any], values: Mapping[str, Any], stage: str) -> bool:
+    """Refuse a stage win to a trial that already fails qualification's bars.
+
+    Selection used to rank on mean fold score alone, so a candidate could take
+    a stage on one lucky fold, or while badly calibrated, and only lose
+    qualification afterwards — once the sealed holdout had been spent.  Both
+    bars are the same ones qualification applies.
+
+    The baseline stage is exempt: it is the reference those bars are measured
+    against, scores exactly prevalence, and so can never beat prevalence.
+    Gating it leaves qualification with no baseline to compare against at all.
+    """
+    if stage == "baseline":
+        return True
+    max_brier_ratio = values.get("max_development_brier_ratio")
+    if max_brier_ratio is not None:
+        ratio = metrics.get("development_brier_ratio")
+        if ratio is not None and float(ratio) > float(max_brier_ratio):
+            return False
+    minimum_folds = values.get("min_development_folds_won")
+    if minimum_folds is not None:
+        won = metrics.get("development_folds_won")
+        if won is not None and float(won) < float(minimum_folds):
+            return False
+    return True
 
 
 def _lineage(
