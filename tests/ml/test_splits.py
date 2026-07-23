@@ -96,3 +96,25 @@ def test_splits_reject_single_class_folds():
             embargo_seconds=1,
             targets=[0] * len(timestamps),
         )
+
+
+def test_first_fold_is_not_starved_of_training_data():
+    """An expanding window must start from a usable base.
+
+    Anchoring the first validation window to a bare embargo interval left
+    fold 0 training on minutes of history while predicting the rest of the
+    corpus, so it lost to a constant predictor no matter how much data the
+    run was given.
+    """
+    timestamps = pd.date_range("2026-01-01", periods=60_000, freq="s", tz="UTC")
+
+    plan = make_temporal_splits(
+        timestamps,
+        folds=5,
+        final_holdout_fraction=0.20,
+        embargo_seconds=360,
+        targets=_binary_targets(len(timestamps)),
+    )
+
+    development_rows = len(timestamps) - len(plan.final_holdout)
+    assert len(plan.folds[0].train) >= development_rows * 0.10

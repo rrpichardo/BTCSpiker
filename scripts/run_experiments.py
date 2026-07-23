@@ -410,7 +410,10 @@ def main() -> int:
         "tracking_uri": config.mlflow.tracking_uri, "experiment_name": config.mlflow.experiment_name,
         "search_id": raw.get("search_id", args.dataset_id), "git_sha": git_sha,
         "target_version": raw.get("target_version", config.target.name),
-        "validation_version": raw.get("validation_version", "purged_walkforward_v1"),
+        # v2 opens the expanding window on an equal block of the development
+        # span instead of a bare embargo interval; folds are not comparable
+        # across the two, so the contract has to name which one produced a run.
+        "validation_version": raw.get("validation_version", "purged_walkforward_v2"),
         "deployable": False, "max_hours": config.search.max_hours,
         "max_parallel_jobs": config.search.max_parallel_jobs,
         "trials": build_stage_trials(config, raw, args.stage), "labelled_rows": int(frame.shape[0]),
