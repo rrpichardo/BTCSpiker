@@ -34,6 +34,11 @@ class ExistingDataset:
     end_time: str
     columns: tuple[str, ...]
     sha256: str
+    parent_dataset_id: str | None = None
+    source_manifest_path: str | None = None
+    feature_set_id: str | None = None
+    feature_engine_git_sha: str | None = None
+    excluded_intervals: tuple[dict[str, str], ...] = ()
 
 
 def resolve_existing_dataset(configured: Path | None) -> Path:
@@ -118,6 +123,19 @@ def inspect_existing_dataset(path: Path) -> ExistingDataset:
             f"observed values {sorted(unique_targets)}"
         )
 
+    lineage_path = path.with_suffix(path.suffix + ".lineage.json")
+    lineage: dict[str, object] = {}
+    if lineage_path.is_file():
+        try:
+            lineage = json.loads(lineage_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid feature lineage sidecar at {lineage_path}: {error}") from error
+        if not isinstance(lineage, dict):
+            raise ValueError(f"invalid feature lineage sidecar at {lineage_path}")
+    exclusions = lineage.get("excluded_intervals", [])
+    if not isinstance(exclusions, list) or any(not isinstance(item, dict) for item in exclusions):
+        raise ValueError(f"invalid excluded intervals in {lineage_path}")
+
     return ExistingDataset(
         path=path.resolve(),
         rows=int(len(df)),
@@ -125,11 +143,23 @@ def inspect_existing_dataset(path: Path) -> ExistingDataset:
         end_time=parsed_timestamps.iloc[-1].isoformat(),
         columns=tuple(schema_columns),
         sha256=sha256_file(path),
+        parent_dataset_id=lineage.get("parent_dataset_id") if isinstance(lineage.get("parent_dataset_id"), str) else None,
+        source_manifest_path=lineage.get("source_manifest_path") if isinstance(lineage.get("source_manifest_path"), str) else None,
+        feature_set_id=lineage.get("feature_set_id") if isinstance(lineage.get("feature_set_id"), str) else None,
+        feature_engine_git_sha=lineage.get("feature_engine_git_sha") if isinstance(lineage.get("feature_engine_git_sha"), str) else None,
+        excluded_intervals=tuple(exclusions),
     )
 
 
 def publish_existing_manifest(
-    dataset: ExistingDataset, artifact_root: Path
+    dataset: ExistingDataset,
+    artifact_root: Path,
+    *,
+    parent_dataset_id: str | None = None,
+    source_manifest_path: str | None = None,
+    feature_set_id: str | None = None,
+    feature_engine_git_sha: str | None = None,
+    excluded_intervals: list[dict[str, str]] | None = None,
 ) -> tuple[str, Path]:
     """Write a deterministic manifest describing the bound corpus.
 
@@ -168,6 +198,11 @@ def publish_existing_manifest(
                 "sha256": dataset.sha256,
             }
         ],
+        parent_dataset_id=parent_dataset_id if parent_dataset_id is not None else dataset.parent_dataset_id,
+        source_manifest_path=source_manifest_path if source_manifest_path is not None else dataset.source_manifest_path,
+        feature_set_id=feature_set_id if feature_set_id is not None else dataset.feature_set_id,
+        feature_engine_git_sha=feature_engine_git_sha if feature_engine_git_sha is not None else dataset.feature_engine_git_sha,
+        excluded_intervals=list(dataset.excluded_intervals if excluded_intervals is None else excluded_intervals),
     )
     dataset_id = manifest_id(manifest)
 

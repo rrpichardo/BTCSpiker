@@ -4,20 +4,23 @@
 
 **Goal:** Build a reproducible, zero-cash historical-data pipeline that downloads at least 30 qualified day-equivalents of Coinbase BTC-USD trades and L2 order-book data, preserves a feature-flexible raw schema, and publishes a feature Parquet accepted through `BTCSPIKER_EXISTING_DATA`.
 
-**Architecture:** Pin and download 35 UTC days (`2026-04-24` through `2026-05-28`) of CBB26 BTC-USD replay shards, backfill matching Coinbase public trades, normalize both sources into immutable hourly Parquet partitions, and causally join each trade to the last fully observed L2 second. Restore each PostgreSQL custom dump into an ephemeral PostgreSQL 16 staging database, reconstruct BBO quantities from anchors and deltas, and fail closed on source gaps, sequence regressions, checksum mismatches, or fewer than 30 qualified day-equivalents.
+**Architecture:** Pin and stream 35 UTC days (`2026-04-24` through `2026-05-28`) of CBB26 BTC-USD replay shards one day at a time, backfill matching Coinbase public trades, normalize both sources into immutable hourly Parquet partitions, and causally join each trade to the last fully observed L2 second. Restore each PostgreSQL custom dump into an ephemeral PostgreSQL 16 staging database, reconstruct BBO quantities from anchors and deltas, upload verified normalized outputs to a private Hugging Face dataset repository, and remove local daily working files only after remote checksum verification. Fail closed on source gaps, sequence regressions, upload/checksum mismatches, fewer than 30 qualified day-equivalents, or local free space below the safety floor.
 
 **Tech Stack:** Python 3.11+, pandas, PyArrow, requests, psycopg 3, Hugging Face Hub/Xet, PostgreSQL 16 in Docker Compose, pytest.
 
 ## Global Constraints
 
 - Spend ceiling is `$0`; CoinAPI, Kaiko, CoinDesk, Tardis trials, and any paid storage require a separate user authorization.
+- Canonical storage is the authenticated user's private Hugging Face dataset repository named `btcspiker-coinbase-history`; repository visibility must be verified as private before the first upload.
+- The Hugging Face token must come from `hf auth login` or the process environment, require dataset write access, and never be printed, committed, written to a manifest, or accepted as a CLI argument.
 - Pin CBB26 dataset revision `c1e89eded9915e1c75a18911298edfbbbe4050ce`.
 - Acquire product `BTC-USD` for UTC dates `2026-04-24` through `2026-05-28`, inclusive.
 - Publish only when qualified coverage is at least `2_592_000` seconds (30 days); preserve all incidents and excluded windows in the manifest.
 - Preserve source values and semantics. Do not reinterpret Coinbase's reported trade side as maker or aggressor side.
 - Do not use the `best_bid` or `best_ask` returned alongside the historical trades response as historical quotes.
 - CBB26 rows represent end-of-second book state. A trade at second `S` may only consume book state from `S-1` or earlier to prevent intrasecond look-ahead.
-- Source downloads and generated datasets live under `data/` and remain excluded from git.
+- CBB26 dumps are transient reproducible cache files: process one UTC day, upload normalized outputs, verify the remote digest, then delete that day's dump and staging data. Do not upload a duplicate of the CBB26 source dump.
+- Local cache and generated working files live under `data/` and remain excluded from git. Stop before starting a day if local free space is below `4_294_967_296` bytes (4 GiB).
 - Tests use small checked-in fixtures and mocked HTTP/subprocess boundaries; the standard test suite must not download multi-gigabyte files.
 - This pipeline remains independent of the current ML tournament and must not mutate MLflow or promote models.
 - The CBB26 market-data license remains `other`; manifests must record `usage_scope="research_unverified"` until commercial-use rights are reviewed.
@@ -31,7 +34,7 @@
 | Main agent | `btcspiker_data/contracts.py`, `tests/data/conftest.py` | Freeze cross-agent types, schemas, fixtures, and invariants before parallel work begins. |
 | Agent A | `btcspiker_data/cbb26.py`, `btcspiker_data/book_replay.py`, `btcspiker_data/sql/cbb26_staging.sql`, `docker-compose.data.yaml`, matching tests | Discover/download/restore CBB26 shards and replay L2 books. |
 | Agent B | `btcspiker_data/coinbase_trades.py`, `btcspiker_data/materialize.py`, matching tests | Backfill trades, causally join trades and book state, materialize ML inputs. |
-| Agent C | `btcspiker_data/storage.py`, `btcspiker_data/quality.py`, `btcspiker_data/raw_manifest.py`, matching tests | Atomic Parquet partitions, checksums, coverage incidents, deterministic raw manifest. |
+| Agent C | `btcspiker_data/storage.py`, `btcspiker_data/hub_storage.py`, `btcspiker_data/quality.py`, `btcspiker_data/raw_manifest.py`, matching tests | Atomic Parquet partitions, private Hub uploads, checksums, coverage incidents, deterministic raw manifest. |
 | Main agent | `scripts/download_coinbase_history.py`, `scripts/materialize_coinbase_history.py`, `btcspiker_ml/datasets.py`, integration tests, docs | Integrate the three workstreams and publish the experiment-compatible dataset. |
 
 Agents must work in separate `codex/` worktrees during implementation. They may not edit another owner's files. The main agent cherry-picks or merges each reviewed task, runs contract tests after every merge, and alone resolves interface changes.
@@ -142,7 +145,7 @@ from decimal import Decimal
 
 RAW_BOOK_COLUMNS = (
     "source", "product_id", "observed_through", "sequence_start",
-    "sequence_end", "best_bid", "bid_size", "best_ask", "ask_size",
+    "sequence_end", "best_bid", "bid_size", "best_ask", "ask_size", "segment_id",
     "changes_json", "source_revision", "source_date",
 )
 RAW_TRADE_COLUMNS = (
@@ -272,7 +275,7 @@ git commit -m "feat(data): freeze historical market data contracts"
 
 **Interfaces:**
 - Consumes: `QualityIncident` and UTC validation from Task 1.
-- Produces: `CBB26Shard`, `list_btc_shards()`, `download_shard()`, `restore_shard()`, `read_sidecar()`.
+- Produces: `CBB26Shard`, `list_btc_shards()`, `download_shard_to_cache()`, `restore_shard()`, `read_sidecar()`, `remove_verified_shard_cache()`.
 
 - [ ] **Step 1: Test exact pinned inventory and idempotent downloads**
 
@@ -288,9 +291,9 @@ def test_inventory_requires_every_requested_day(fake_hf_tree):
 
 
 def test_download_reuses_matching_local_file(tmp_path, shard, fake_download):
-    target = download_shard(shard, tmp_path, fake_download)
+    target = download_shard_to_cache(shard, tmp_path, fake_download)
     first_digest = sha256_file(target)
-    target_again = download_shard(shard, tmp_path, fake_download)
+    target_again = download_shard_to_cache(shard, tmp_path, fake_download)
     assert target_again == target
     assert sha256_file(target_again) == first_digest
     assert fake_download.calls == 1
@@ -321,21 +324,29 @@ class CBB26Shard:
     expected_size: int
 ```
 
-Use `HfApi.list_repo_tree(..., recursive=True, revision=CBB26_REVISION)` and `hf_hub_download()` with the exact revision. Require one `.dump` and one `.json` for every date. Download to `downloads/cbb26/<revision>/<date>/BTC-USD.*`, compare the local byte count with both the Hub tree and sidecar, compute SHA-256, and never replace a matching file.
+Use `HfApi.list_repo_tree(..., recursive=True, revision=CBB26_REVISION)` and `hf_hub_download()` with the exact revision. Require one `.dump` and one `.json` for every date. Download only the active day to `data/coinbase_history/cache/cbb26/<revision>/<date>/BTC-USD.*`, compare the local byte count with both the Hub tree and sidecar, compute SHA-256, and never replace a matching in-progress file.
 
-- [ ] **Step 4: Define a plain PostgreSQL staging schema**
+- [ ] **Step 4: Enforce the local-space safety floor**
+
+Before downloading or restoring a day, call `shutil.disk_usage(cache_root).free` and require at least `4_294_967_296` free bytes. Raise `InsufficientWorkingSpace` with the observed and required byte counts before creating any new file.
+
+- [ ] **Step 5: Define a plain PostgreSQL staging schema**
 
 Create schema `cbb26_hf_export_staging` and the four documented tables with the exact columns from the pinned CBB26 migrations. Do not install TimescaleDB; the staging database exists only to restore and read one daily shard at a time.
 
-- [ ] **Step 5: Implement Docker-backed restoration**
+- [ ] **Step 6: Implement Docker-backed restoration**
 
 `docker-compose.data.yaml` must run `postgres:16-alpine`, bind only `127.0.0.1:55432`, use database/user `btcspiker`, mount the download root read-only at `/imports`, and expose a `pg_isready` health check. `restore_shard()` must truncate staging tables, invoke `pg_restore --data-only --no-owner --no-privileges`, and compare restored table counts to the sidecar before returning.
 
-- [ ] **Step 6: Test restore command construction and count mismatch behavior**
+- [ ] **Step 7: Test restore command construction and count mismatch behavior**
 
 Mock subprocess and psycopg boundaries. Assert that a non-zero `pg_restore` exit, wrong row count, missing anchor, or a row outside the sidecar UTC bounds raises `CBB26IntegrityError` without writing normalized output.
 
-- [ ] **Step 7: Run and commit**
+- [ ] **Step 8: Implement verified cache removal**
+
+`remove_verified_shard_cache()` must require a recorded successful remote upload for every normalized partition derived from the day and matching remote SHA-256 values. Remove only that day's `.dump`, `.json`, and restored staging rows. A missing upload receipt or mismatched digest must retain the cache and raise `UnverifiedRemoteArtifact`.
+
+- [ ] **Step 9: Run and commit**
 
 Run: `pytest tests/data/test_cbb26.py -v`
 
@@ -419,13 +430,15 @@ git commit -m "feat(data): add Coinbase historical trade backfill"
 
 **Files:**
 - Create: `btcspiker_data/storage.py`
+- Create: `btcspiker_data/hub_storage.py`
 - Create: `btcspiker_data/raw_manifest.py`
 - Create: `tests/data/test_storage.py`
+- Create: `tests/data/test_hub_storage.py`
 - Create: `tests/data/test_raw_manifest.py`
 
 **Interfaces:**
 - Consumes: ordered column constants and `QualityIncident` from Task 1.
-- Produces: `PartitionRecord`, `write_partition_atomic()`, `RawDatasetManifest`, `raw_manifest_id()`, `publish_raw_manifest()`.
+- Produces: `PartitionRecord`, `write_partition_atomic()`, `PrivateHubStore`, `UploadReceipt`, `RawDatasetManifest`, `raw_manifest_id()`, `publish_raw_manifest()`.
 
 - [ ] **Step 1: Write atomicity and determinism tests**
 
@@ -459,18 +472,26 @@ Refuse unordered columns, naive timestamps, duplicate stable keys, or an existin
 
 - [ ] **Step 4: Implement a deterministic manifest**
 
-The manifest must record source revision, source URL, `usage_scope`, ordered schemas, every partition path/row count/SHA-256, coverage seconds, missing seconds, duplicate counts, sequence incidents, excluded intervals, and creation metadata outside the hashed identity payload. Hash canonical JSON without `created_at` so identical inputs produce the same dataset ID.
+The manifest must record source revision, source URL, private Hub repository ID and pinned commit, `usage_scope`, ordered schemas, every remote partition path/row count/SHA-256, coverage seconds, missing seconds, duplicate counts, sequence incidents, excluded intervals, and creation metadata outside the hashed identity payload. Hash canonical JSON without `created_at` so identical inputs produce the same dataset ID.
 
-- [ ] **Step 5: Run and commit**
+- [ ] **Step 5: Implement private Hugging Face storage**
 
-Run: `pytest tests/data/test_storage.py tests/data/test_raw_manifest.py -v`
+`PrivateHubStore.connect()` must call `HfApi.whoami()`, derive `<authenticated-name>/btcspiker-coinbase-history`, create it with `repo_type="dataset"` and `private=True` when absent, and verify `repo_info(...).private is True` before upload. Upload one immutable partition at a time with `upload_file()`, resolve the exact committed revision, and verify the remote bytes against the local SHA-256 using Hub file metadata when it exposes a content SHA-256 or a committed-revision download otherwise. Return `UploadReceipt(repo_id, revision, remote_path, sha256, size_bytes)`. Never log the token or accept it as a function/CLI parameter.
+
+- [ ] **Step 6: Test authentication, privacy, and checksum failures**
+
+Use a fake `HfApi` boundary. Assert that unauthenticated access, a public repository, a remote digest mismatch, or an upload whose committed revision cannot be read fails without deleting the local partition. Assert that an already-uploaded matching content-addressed path returns the existing receipt without uploading again.
+
+- [ ] **Step 7: Run and commit**
+
+Run: `pytest tests/data/test_storage.py tests/data/test_hub_storage.py tests/data/test_raw_manifest.py -v`
 
 Expected: all storage and manifest tests pass.
 
 Run:
 
 ```bash
-git add btcspiker_data/storage.py btcspiker_data/raw_manifest.py tests/data/test_storage.py tests/data/test_raw_manifest.py
+git add btcspiker_data/storage.py btcspiker_data/hub_storage.py btcspiker_data/raw_manifest.py tests/data/test_storage.py tests/data/test_hub_storage.py tests/data/test_raw_manifest.py
 git commit -m "feat(data): publish immutable raw data partitions"
 ```
 
@@ -641,14 +662,14 @@ git commit -m "feat(data): enforce historical data quality gate"
 
 - [ ] **Step 1: Write CLI integration tests**
 
-Use mocked source clients and a temporary data root. Assert `download_coinbase_history.py` defaults to the pinned revision/product/35-day window, refuses an unpinned revision, resumes existing verified partitions, and exits non-zero on a failed quality report.
+Use mocked source clients, a fake private Hub API, and a temporary cache root. Assert `download_coinbase_history.py` defaults to the pinned revision/product/35-day window, refuses an unpinned revision, resumes remote verified partitions, refuses a public destination repository, retains local files after upload verification failure, and exits non-zero on a failed quality report.
 
 - [ ] **Step 2: Implement the download CLI**
 
 Required arguments:
 
 ```text
---data-root PATH
+--cache-root PATH
 --start 2026-04-24
 --end 2026-05-28
 --product BTC-USD
@@ -656,7 +677,7 @@ Required arguments:
 --max-rps 8
 ```
 
-The command prints the raw dataset ID, manifest path, quality-report path, downloaded/reused file counts, bytes, and qualified seconds. It does not start model training.
+The command discovers the private destination repository from `hf auth whoami` and prints the raw dataset ID, private repository ID, pinned Hub revision, manifest path, quality-report path, downloaded/uploaded/reused file counts, bytes, and qualified seconds. It does not print credentials or start model training.
 
 - [ ] **Step 3: Implement the materialization CLI**
 
@@ -672,7 +693,7 @@ Add optional `parent_dataset_id`, `source_manifest_path`, `feature_set_id`, `fea
 
 - [ ] **Step 5: Record the source decision**
 
-Document acquisition mode `hybrid-free`, canonical store `local disk under user-selected --data-root`, CBB26 revision/date/license, Coinbase public-trade endpoint, `$0` ceiling, 35-day buffer, 30-day qualified gate, and the rule that commercial use remains unapproved.
+Document acquisition mode `hybrid-free`, canonical store `private Hugging Face dataset <authenticated-name>/btcspiker-coinbase-history`, transient local one-day cache, CBB26 revision/date/license, Coinbase public-trade endpoint, `$0` ceiling, 35-day buffer, 30-day qualified gate, and the rule that commercial use remains unapproved.
 
 - [ ] **Step 6: Run and commit**
 
@@ -703,7 +724,7 @@ Expected: zero failures.
 
 - [ ] **Step 2: Run a one-day real-source smoke test**
 
-Run the acquisition command for `2026-04-24` only into a temporary data root. Verify the Hub revision, sidecar, dump size, restore counts, trade pagination, replay, causal join, and manifest. This smoke test is allowed to fail the 30-day publication gate; it must fail for exactly that reason after all one-day integrity checks pass.
+Run the acquisition command for `2026-04-24` only with a temporary cache root. Verify the Hub revision, sidecar, dump size, restore counts, trade pagination, replay, causal join, upload receipts, and manifest. This smoke test is allowed to fail the 30-day publication gate; it must fail for exactly that reason after all one-day integrity checks pass.
 
 - [ ] **Step 3: Run the full 35-day acquisition**
 
@@ -711,7 +732,7 @@ Run:
 
 ```bash
 python scripts/download_coinbase_history.py \
-  --data-root data/coinbase_history \
+  --cache-root data/coinbase_history/cache \
   --start 2026-04-24 \
   --end 2026-05-28 \
   --product BTC-USD \

@@ -136,6 +136,48 @@ def test_publish_manifest_is_deterministic(tmp_path: Path):
     assert id_a == id_b
 
 
+def test_publish_manifest_records_optional_raw_lineage(tmp_path: Path):
+    dataset = inspect_existing_dataset(HANDOFF_SAMPLE.resolve())
+    dataset_id, manifest_path = publish_existing_manifest(
+        dataset,
+        tmp_path / "artifacts",
+        parent_dataset_id="raw-1",
+        source_manifest_path="/data/raw-1.json",
+        feature_set_id="core_v1",
+        feature_engine_git_sha="a" * 40,
+        excluded_intervals=[{"start": "2026-04-24T01:00:00+00:00", "end": "2026-04-24T01:01:00+00:00"}],
+    )
+
+    payload = json.loads(manifest_path.read_text())
+    assert payload["parent_dataset_id"] == "raw-1"
+    assert payload["source_manifest_path"] == "/data/raw-1.json"
+    assert payload["feature_set_id"] == "core_v1"
+    assert payload["feature_engine_git_sha"] == "a" * 40
+    assert payload["excluded_intervals"][0]["start"].startswith("2026-04-24")
+    assert dataset_id
+
+
+def test_inspection_carries_adjacent_lineage_into_default_manifest(tmp_path: Path):
+    feature_path = _copy_handoff(tmp_path)
+    lineage = {
+        "parent_dataset_id": "b" * 64,
+        "source_manifest_path": "/data/raw.json",
+        "feature_set_id": "core_v1",
+        "feature_engine_git_sha": "a" * 40,
+        "excluded_intervals": [{"start": "2026-04-24T01:00:00+00:00", "end": "2026-04-24T01:01:00+00:00"}],
+    }
+    feature_path.with_suffix(".parquet.lineage.json").write_text(json.dumps(lineage))
+
+    dataset = inspect_existing_dataset(feature_path)
+    _, manifest_path = publish_existing_manifest(dataset, tmp_path / "artifacts")
+    payload = json.loads(manifest_path.read_text())
+
+    assert payload["parent_dataset_id"] == "b" * 64
+    assert payload["source_manifest_path"] == "/data/raw.json"
+    assert payload["feature_set_id"] == "core_v1"
+    assert payload["feature_engine_git_sha"] == "a" * 40
+
+
 def test_bind_cli_runs_without_pythonpath(tmp_path: Path):
     # Explicitly strip PYTHONPATH so the sys.path shim in the script is what
     # makes btcspiker_ml importable. This locks in the pattern for the whole
