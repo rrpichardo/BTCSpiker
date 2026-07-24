@@ -1063,19 +1063,30 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
 
     conn = materializer.init_db(db_path)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
-    assert {"feature_id", "stream_epoch", "tau", "run_id"} <= columns
+    assert {"feature_id", "stream_epoch", "tau", "run_id", "market_price"} <= columns
 
     row = conn.execute(
-        "SELECT event_id, feature_id, tau FROM predictions WHERE event_id = 'old1'"
+        "SELECT event_id, feature_id, tau, market_price FROM predictions "
+        "WHERE event_id = 'old1'"
     ).fetchone()
-    assert row == ("old1", None, None)
+    assert row == ("old1", None, None, None)
     conn.close()
 
     # A second init_db call on the now-migrated DB must not error.
     conn2 = materializer.init_db(db_path)
     columns2 = {row[1] for row in conn2.execute("PRAGMA table_info(predictions)")}
-    assert {"feature_id", "stream_epoch", "tau", "run_id"} <= columns2
+    assert {"feature_id", "stream_epoch", "tau", "run_id", "market_price"} <= columns2
     conn2.close()
+
+
+def test_market_price_round_trips_through_insert_and_recent(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    event = _event("ticks.features:0:1", 1, market_price=65432.1)
+
+    assert materializer.insert_events(conn, [event]) == 1
+
+    rows = materializer.recent(conn, 10)
+    assert rows[0]["market_price"] == 65432.1
 
 
 def test_outcomes_consumer_skips_malformed_message_and_commits_past_it(

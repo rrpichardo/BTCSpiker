@@ -6,6 +6,7 @@ from scripts import feature_to_predict_bridge as bridge
 
 FEATURE_MESSAGE = {
     "timestamp": "2026-07-16T19:00:00Z",
+    "price": 65000.5,
     "log_return": 0.001,
     "spread_bps": 2.5,
     "vol_60s": 0.02,
@@ -43,6 +44,7 @@ EXPECTED_EVENT = {
     "stream_epoch": 0,
     "tau": 0.7015,
     "run_id": "abc123",
+    "market_price": 65000.5,
 }
 
 
@@ -99,6 +101,35 @@ def test_prediction_event_uses_original_feature_timestamp_and_exact_contract():
     )
 
     assert event == EXPECTED_EVENT
+
+
+def test_prediction_event_forwards_market_price_and_keeps_timestamps_distinct():
+    # market_price comes from the feature row's own "price", not the API
+    # response, and must never collapse feature_ts/api_ts into one field.
+    message_without_price = {k: v for k, v in FEATURE_MESSAGE.items() if k != "price"}
+
+    event_with_price = bridge._build_prediction_event(
+        FakeMessage(),
+        bridge._build_row(FEATURE_MESSAGE, None),
+        VALID_RESPONSE,
+        feature_ts=FEATURE_MESSAGE["timestamp"],
+        feature_id=FEATURE_MESSAGE["feature_id"],
+        stream_epoch=FEATURE_MESSAGE["stream_epoch"],
+    )
+    event_without_price = bridge._build_prediction_event(
+        FakeMessage(),
+        bridge._build_row(message_without_price, None),
+        VALID_RESPONSE,
+        feature_ts=message_without_price["timestamp"],
+        feature_id=message_without_price["feature_id"],
+        stream_epoch=message_without_price["stream_epoch"],
+    )
+
+    assert event_with_price["market_price"] == 65000.5
+    assert event_without_price["market_price"] is None
+    assert event_with_price["feature_ts"] == "2026-07-16T19:00:00Z"
+    assert event_with_price["api_ts"] == "2026-07-16T19:00:01+00:00"
+    assert event_with_price["feature_ts"] != event_with_price["api_ts"]
 
 
 def test_prediction_event_tolerates_old_format_messages_without_identity():

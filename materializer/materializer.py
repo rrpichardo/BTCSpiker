@@ -56,9 +56,10 @@ from pathlib import Path
 
 from confluent_kafka import Consumer, KafkaError, OFFSET_BEGINNING, TopicPartition
 from confluent_kafka.admin import AdminClient
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 import evaluation
+import timeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +96,7 @@ LIMIT_MAX = 2000
 WINDOW_MINUTES_MIN = 1
 WINDOW_MINUTES_MAX = 120
 PERF_CACHE_SECONDS = 5.0
+TIMELINE_RANGE_MAX_SECONDS = 24 * 60 * 60 + 60  # 24h + a minute of slack
 STARTUP_TIMEOUT = 30.0
 STARTUP_READY_TIMEOUT = STARTUP_TIMEOUT + 5.0
 KAFKA_SOCKET_TIMEOUT_MS = 3000
@@ -105,9 +107,9 @@ BROKER_HEALTHCHECK_INTERVAL_SEC = 5.0
 BROKER_HEALTHCHECK_TIMEOUT_SEC = 1.0
 
 # Pinned event_id / column ordering shared by parsing, inserts, and reads.
-# feature_id/stream_epoch/tau/run_id are newer, nullable fields (added via
-# ALTER TABLE migration below) — old rows simply carry null for them, which
-# makes them ungradeable rather than wrong.
+# feature_id/stream_epoch/tau/run_id/market_price are newer, nullable fields
+# (added via ALTER TABLE migration below) — old rows simply carry null for
+# them, which makes them ungradeable (or price-less) rather than wrong.
 EVENT_FIELDS = [
     "event_id",
     "source_partition",
@@ -125,6 +127,7 @@ EVENT_FIELDS = [
     "stream_epoch",
     "tau",
     "run_id",
+    "market_price",
 ]
 
 # Columns added after the original predictions table shipped; migrated in
@@ -134,6 +137,7 @@ PREDICTIONS_MIGRATED_COLUMNS = [
     ("stream_epoch", "INT"),
     ("tau", "REAL"),
     ("run_id", "TEXT"),
+    ("market_price", "REAL"),
 ]
 
 SCHEMA_SQL = """
@@ -224,6 +228,15 @@ SELECT {', '.join(PERFORMANCE_JOIN_FIELDS)}
 FROM predictions p
 LEFT JOIN outcomes o ON p.feature_id = o.feature_id
 WHERE p.feature_ts >= ?
+ORDER BY p.feature_ts ASC
+"""
+
+# Same join as PERFORMANCE_JOIN_SQL, bounded on both sides for /predictions/timeline.
+TIMELINE_JOIN_SQL = f"""
+SELECT {', '.join(PERFORMANCE_JOIN_FIELDS)}
+FROM predictions p
+LEFT JOIN outcomes o ON p.feature_id = o.feature_id
+WHERE p.feature_ts >= ? AND p.feature_ts < ?
 ORDER BY p.feature_ts ASC
 """
 
@@ -557,6 +570,45 @@ def performance_window(
         conn.close()
 
 
+def timeline_window(
+    path_or_conn: str | Path | sqlite3.Connection, from_ts: str, to_ts: str
+) -> dict:
+    """Gather everything /predictions/timeline needs for predictions with
+    feature_ts in [from_ts, to_ts) (both already `_normalize_ts`-d):
+
+        joined_rows      -- predictions LEFT JOIN outcomes, ordered by
+                             feature_ts ascending, for timeline.build_timeline
+        available_from   -- oldest feature_ts in the WHOLE table (None if
+                             empty) -- used to report retained-history coverage
+        available_to     -- newest feature_ts in the whole table -- also the
+                             maturity anchor for pending-vs-unavailable
+    """
+
+    def _query(conn: sqlite3.Connection) -> dict:
+        cur = conn.execute(TIMELINE_JOIN_SQL, (from_ts, to_ts))
+        columns = [d[0] for d in cur.description]
+        joined_rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        bounds = conn.execute(
+            "SELECT MIN(feature_ts), MAX(feature_ts) FROM predictions"
+        ).fetchone()
+
+        return {
+            "joined_rows": joined_rows,
+            "available_from": bounds[0],
+            "available_to": bounds[1],
+        }
+
+    if isinstance(path_or_conn, sqlite3.Connection):
+        return _query(path_or_conn)
+
+    conn = _open_readonly(path_or_conn)
+    try:
+        return _query(conn)
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Event parsing
 # ---------------------------------------------------------------------------
@@ -669,6 +721,49 @@ def validate_window_minutes(window_minutes: int) -> int:
             f"{WINDOW_MINUTES_MAX}, got {window_minutes}"
         )
     return window_minutes
+
+
+def validate_timeline_range(
+    from_raw: str, to_raw: str, resolution: int | None
+) -> tuple[datetime, datetime, int | None]:
+    """Validate the /predictions/timeline `from`/`to`/`resolution` query params.
+
+    Returns (from_dt, to_dt, resolution) as tz-aware datetimes / int-or-None.
+    """
+    from_dt = _parse_iso(from_raw)
+    to_dt = _parse_iso(to_raw)
+    if from_dt is None:
+        raise ValueError(f"from must be a valid ISO-8601 timestamp, got {from_raw!r}")
+    if to_dt is None:
+        raise ValueError(f"to must be a valid ISO-8601 timestamp, got {to_raw!r}")
+    if to_dt <= from_dt:
+        raise ValueError("to must be after from")
+
+    range_seconds = (to_dt - from_dt).total_seconds()
+    if range_seconds > TIMELINE_RANGE_MAX_SECONDS:
+        raise ValueError(
+            f"requested range ({range_seconds:.0f}s) exceeds the "
+            f"{TIMELINE_RANGE_MAX_SECONDS:.0f}s (24h) maximum"
+        )
+
+    if resolution is not None:
+        if resolution < 1:
+            raise ValueError(
+                f"resolution must be a positive number of seconds, got {resolution}"
+            )
+        # An explicit resolution bypasses build_timeline's own auto-bucketing
+        # (which only kicks in when resolution is omitted), so a too-fine
+        # resolution over a wide range could otherwise force an unbounded
+        # SQLite read/response despite MAX_TIMELINE_POINTS existing.
+        implied_points = range_seconds / resolution
+        if implied_points > timeline.MAX_TIMELINE_POINTS:
+            raise ValueError(
+                f"resolution={resolution}s over a {range_seconds:.0f}s range "
+                f"implies {implied_points:.0f} points, exceeding the "
+                f"{timeline.MAX_TIMELINE_POINTS}-point limit"
+            )
+
+    return from_dt, to_dt, resolution
 
 
 # ---------------------------------------------------------------------------
@@ -1221,6 +1316,43 @@ def _parse_iso(raw: str | None):
         return None
 
 
+def _build_timeline_payload(
+    from_dt: datetime, to_dt: datetime, resolution: int | None
+) -> dict:
+    """Assemble the full /predictions/timeline response for [from_dt, to_dt).
+
+    `complete` reports whether retained history actually reaches back to
+    from_dt (not a row-count-based guess -- Coinbase can exceed 1 event/s,
+    so a fixed row cap does not reliably imply a fixed hours-of-history
+    figure). The maturity anchor for pending-vs-unavailable classification
+    is available_to (the newest feature_ts in the whole table), never
+    wall-clock now, so replay/backtest data classifies identically to live.
+    """
+    from_ts = _normalize_ts(from_dt.isoformat())
+    to_ts = _normalize_ts(to_dt.isoformat())
+
+    window_data = timeline_window(PREDICTIONS_DB_PATH, from_ts, to_ts)
+    available_from = window_data["available_from"]
+    available_to = window_data["available_to"]
+    complete = available_from is None or available_from <= from_ts
+
+    anchor_dt = _parse_iso(available_to)
+    points, aggregated, resolution_used = timeline.build_timeline(
+        window_data["joined_rows"], from_dt, to_dt, anchor_dt, resolution
+    )
+
+    return {
+        "from": from_ts,
+        "to": to_ts,
+        "resolution": resolution_used,
+        "aggregated": aggregated,
+        "complete": complete,
+        "available_from": available_from,
+        "available_to": available_to,
+        "points": points,
+    }
+
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
@@ -1348,6 +1480,27 @@ def get_performance(window_minutes: int = 30):
     with _perf_cache_lock:
         _perf_cache[window_minutes] = (time.monotonic(), payload)
     return payload
+
+
+@app.get("/predictions/timeline")
+def get_timeline(
+    from_: str = Query(alias="from"), to: str = Query(), resolution: int | None = None
+):
+    try:
+        from_dt, to_dt, resolution = validate_timeline_range(from_, to, resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    with _state.lock:
+        ready = _state.ready
+    if not ready:
+        raise HTTPException(status_code=503, detail="materializer is not ready")
+
+    try:
+        return _build_timeline_payload(from_dt, to_dt, resolution)
+    except sqlite3.DatabaseError as exc:
+        raise HTTPException(
+            status_code=503, detail="predictions database unavailable"
+        ) from exc
 
 
 @app.get("/health")

@@ -1,5 +1,7 @@
 
-## 09:32 | codex/v1
-Fixed selection via TDD calibration & consistency gates; phases 4-8 autonomous (4-5 found+fixed defects, 6-7 blocked, 8 merged); cleaned branches; pushed main; fixing CI + archiving artifacts.
-## 09:55 | codex/v1
-Fixed 2-file CI lint & merged; archived evidence; phases 0-5✓ 6-7✗ 8✓; flagged blockers (30d data, 4 ML tools, untested phase-6) + investigating signal weakness.
+## 15:13 | main
+Added market_price field through bridge→materializer, built /timeline endpoint w/ 6-state outcome classification, replaced ScoreChart w/ TimelineCharts dual-chart + range-selector (1m–24h), fixture & live verified.
+## 15:19 | main
+Codex review found 2 P2 bugs (resolution bounds validation, horizon-boundary classification); verified findings; fixing timeline.py/materializer.py.
+## 15:43 | main
+Fixed both P2 bugs: materializer.py (resolution bounds validation), timeline.py (horizon-boundary classification); added regression tests; all 403 tests pass.

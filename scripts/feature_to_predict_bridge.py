@@ -177,6 +177,9 @@ def _build_prediction_event(
     feature_id/stream_epoch come from the raw consumed feature message (old-
     format backlog messages lack them, so they fall back to null rather than
     crashing). tau/run_id come from the /predict response payload.
+    market_price is the last-trade price captured alongside this feature row
+    (row["price"]); it's market context for the timeline view, not a model
+    feature, and old messages that predate it fall back to null.
     """
     return {
         "event_id": f"{msg.topic()}:{msg.partition()}:{msg.offset()}",
@@ -195,6 +198,7 @@ def _build_prediction_event(
         "spread_bps": row.get("spread_bps"),
         "log_return": row.get("log_return"),
         "trade_intensity_60s": row.get("trade_intensity_60s"),
+        "market_price": row.get("price"),
     }
 
 

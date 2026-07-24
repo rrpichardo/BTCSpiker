@@ -54,3 +54,9 @@ export function fetchSystemStatus(signal) {
 export function fetchPerformance(windowMinutes, signal) {
   return getJson(`/api/predictions/performance?window_minutes=${windowMinutes}`, signal);
 }
+
+export function fetchTimeline(fromIso, toIso, resolution, signal) {
+  const params = new URLSearchParams({ from: fromIso, to: toIso });
+  if (resolution) params.set("resolution", String(resolution));
+  return getJson(`/api/predictions/timeline?${params.toString()}`, signal);
+}

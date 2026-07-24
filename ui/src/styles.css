@@ -431,6 +431,27 @@ button {
   border-top: 1px solid rgba(255, 255, 255, 0.035);
 }
 
+.timeline-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeline-chart-price .score-chart-visual {
+  border-top: none;
+  padding-top: 0;
+}
+
+.timeline-coverage-note {
+  margin: 0 0 8px;
+}
+
+.timeline-legend {
+  margin: 10px 0 0;
+  white-space: normal;
+  line-height: 1.7;
+}
+
 .state-message {
   margin: 0;
   padding: 16px;

@@ -1,11 +1,19 @@
+import { useCallback, useEffect, useState } from "react";
 import { usePolling } from "../usePolling.js";
-import { fetchRecentPredictions, fetchPredictionsHealth } from "../api.js";
-import ScoreChart from "../components/ScoreChart.jsx";
+import { fetchRecentPredictions, fetchPredictionsHealth, fetchTimeline } from "../api.js";
+import { buildTimelinePoints, rangeToWindow, RANGE_OPTIONS } from "../timelineData.js";
+import TimelineCharts from "../components/TimelineCharts.jsx";
 import PredictionsTable from "../components/PredictionsTable.jsx";
 import { ageMs, formatAge, formatDateTime } from "../format.js";
 
 const STALE_MS = 60 * 1000;
 const RESPONSE_STALE_MS = 10 * 1000;
+
+// 1m/5m/15m poll fast since the whole window is only minutes of data; 1h+
+// ranges poll slower since a single new event barely moves the chart.
+function pollMsForRange(range) {
+  return range === "1h" || range === "6h" || range === "24h" ? 10_000 : 2_000;
+}
 
 function degradedReasons({ health, healthError, predError, predLastUpdated }) {
   const reasons = [];
@@ -35,6 +43,7 @@ function degradedReasons({ health, healthError, predError, predLastUpdated }) {
 }
 
 export default function PredictionsPage() {
+  const [range, setRange] = useState("15m");
   const {
     data: predData,
     error: predError,
@@ -51,6 +60,7 @@ export default function PredictionsPage() {
   const stale = reasons.length > 0;
   const hasPredictionResponse = predData !== null;
   const statusLabel = isPaused ? "Paused" : stale ? "Degraded" : "Live";
+  const bootstrapAnchor = latest?.feature_ts ?? latest?.api_ts ?? null;
 
   return (
     <section className="page" id="predictions-page" aria-labelledby="predictions-heading">
@@ -115,24 +125,25 @@ export default function PredictionsPage() {
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Signal trajectory</p>
-            <h3 id="score-chart-heading">Score over time</h3>
+            <h3>Price &amp; spike timeline</h3>
           </div>
-          <span className="panel-meta">0 = calm · 1 = elevated</span>
+          <div className="segmented-control">
+            <div className="segmented-buttons" role="group" aria-label="Timeline range">
+              {RANGE_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`segmented-btn ${range === option ? "segmented-btn-active" : ""}`}
+                  aria-pressed={range === option}
+                  onClick={() => setRange(option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-        {predictionsLoading && !hasPredictionResponse && (
-          <p className="state-message" role="status" aria-live="polite">
-            Loading prediction history…
-          </p>
-        )}
-        {!predictionsLoading && predError && !hasPredictionResponse && (
-          <p className="state-message state-message-error" role="alert">
-            Prediction history is unavailable. Check the materializer service and retry.
-          </p>
-        )}
-        {hasPredictionResponse && predictions.length === 0 && (
-          <p className="state-message">Connected successfully; no predictions have been recorded yet.</p>
-        )}
-        {predictions.length > 0 && <ScoreChart predictions={predictions} />}
+        <TimelinePanel key={range} range={range} bootstrapAnchor={bootstrapAnchor} />
       </div>
 
       <div className="panel">
@@ -150,5 +161,69 @@ export default function PredictionsPage() {
         )}
       </div>
     </section>
+  );
+}
+
+// Keyed by `range` in the parent so switching ranges remounts this body and
+// refetches immediately, rather than waiting out whatever interval was
+// already in flight for the previous range.
+function TimelinePanel({ range, bootstrapAnchor }) {
+  const [anchor, setAnchor] = useState(bootstrapAnchor);
+
+  const fetchFn = useCallback(
+    (signal) => {
+      const effectiveAnchor = anchor ?? bootstrapAnchor;
+      const window_ = effectiveAnchor ? rangeToWindow(range, effectiveAnchor) : null;
+      if (!window_) return Promise.resolve(null);
+      return fetchTimeline(window_.from, window_.to, undefined, signal);
+    },
+    [range, anchor, bootstrapAnchor],
+  );
+
+  const { data, error, isLoading } = usePolling(fetchFn, pollMsForRange(range));
+
+  // Anchor subsequent polls to the timeline's own newest feature_ts (not
+  // wall-clock now), so the rolling window tracks data time and behaves
+  // identically for live and replayed traffic.
+  useEffect(() => {
+    if (data?.available_to) setAnchor(data.available_to);
+  }, [data]);
+
+  const points = data?.points ? buildTimelinePoints(data.points) : [];
+  const hasResponse = data !== null && data !== undefined;
+
+  if (isLoading && !hasResponse) {
+    return (
+      <p className="state-message" role="status" aria-live="polite">
+        Loading prediction history…
+      </p>
+    );
+  }
+  if (error && !hasResponse) {
+    return (
+      <p className="state-message state-message-error" role="alert">
+        Timeline is unavailable. Check the materializer service and retry.
+      </p>
+    );
+  }
+  if (hasResponse && points.length === 0) {
+    return <p className="state-message">Connected successfully; no predictions in this range yet.</p>;
+  }
+  if (!hasResponse) {
+    return (
+      <p className="state-message" role="status" aria-live="polite">
+        Waiting for the first prediction to anchor the timeline…
+      </p>
+    );
+  }
+
+  return (
+    <TimelineCharts
+      points={points}
+      from={data.from}
+      to={data.to}
+      complete={data.complete}
+      availableFrom={data.available_from}
+    />
   );
 }
