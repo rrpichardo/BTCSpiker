@@ -204,6 +204,12 @@ INSERT_OUTCOME_SQL = (
 INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pred_feature_ts ON predictions(feature_ts)",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_feature_ts ON outcomes(feature_ts)",
+    # Without this, the /predictions/performance "outcomes with no matching
+    # prediction" query (see PERFORMANCE_JOIN_SQL's caller, performance_window)
+    # full-scans predictions once per outcomes row in the window -- fine at a
+    # few hundred rows, but a full-table-scan-per-row once predictions holds
+    # ~100k rows (e.g. after a historical backfill), which never returns.
+    "CREATE INDEX IF NOT EXISTS idx_pred_feature_id ON predictions(feature_id)",
 ]
 
 # predictions LEFT JOIN outcomes, scoped by the predictions side's feature_ts

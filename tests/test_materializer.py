@@ -1078,6 +1078,36 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
     conn2.close()
 
 
+def test_performance_unmatched_outcomes_query_uses_index_not_full_scan(tmp_path):
+    """The /predictions/performance handler's "outcomes with no matching
+    prediction" query correlates on predictions.feature_id. Without an index
+    on that column, SQLite has to full-scan `predictions` once per row of
+    `outcomes` in the window — fine at dev-sized row counts, but a real
+    production incident once the table holds ~100k rows (e.g. after a
+    historical backfill): the query never returns, the request handler
+    leaks its thread and DB connection forever, and CPU pegs until the
+    container is killed and restarted.
+    """
+    conn = materializer.init_db(tmp_path / "perf.db")
+
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN "
+        "SELECT COUNT(*) FROM outcomes o "
+        "WHERE o.feature_ts >= ? "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM predictions p WHERE p.feature_id = o.feature_id"
+        ")",
+        ("2026-01-01T00:00:00+00:00",),
+    ).fetchall()
+    conn.close()
+
+    detail = "\n".join(row[-1] for row in plan)
+    assert "SCAN p" not in detail, (
+        f"unmatched-outcomes query full-scans predictions per outcome row "
+        f"(no index on predictions.feature_id) -- query plan:\n{detail}"
+    )
+
+
 def test_outcomes_consumer_skips_malformed_message_and_commits_past_it(
     tmp_path, monkeypatch
 ):
