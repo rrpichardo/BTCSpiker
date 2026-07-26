@@ -85,6 +85,17 @@ DRIFT_PR_AUC_RATIO = float(os.getenv("DRIFT_PR_AUC_RATIO", "0.7"))
 BASELINE_VOL_THRESHOLD = float(os.getenv("BASELINE_VOL_THRESHOLD", "0.000048"))
 ADAPTIVE_PERCENTILE = 85
 
+# Same env var name/default as api/system.py's _materializer_stale_seconds,
+# so /health's own `ok` and the /system/status rollup agree on what "stale"
+# means. A consumer thread can stay alive while wedged retrying a Kafka
+# commit (e.g. UNKNOWN_MEMBER_ID after a rebalance) without ever polling a
+# new message — this catches that by requiring last_event_ts to keep moving.
+# Note: this makes /health honest (and visible via /system/status); it does
+# not by itself trigger a restart. `restart: on-failure` in docker-compose
+# only fires on process exit, not on a HEALTHCHECK going unhealthy, and this
+# stack runs no Swarm/autoheal watcher that acts on that status.
+STALE_SECONDS = float(os.getenv("SYSTEM_MATERIALIZER_STALE_SECONDS", "60"))
+
 # Plan decisions — module constants, not configurable.
 BATCH_MAX_SIZE = 200
 BATCH_WINDOW_SEC = 1.0
@@ -105,6 +116,33 @@ COMMIT_RETRY_BACKOFF_SEC = 0.1
 CONSUMER_RESTART_BACKOFF_SEC = 1.0
 BROKER_HEALTHCHECK_INTERVAL_SEC = 5.0
 BROKER_HEALTHCHECK_TIMEOUT_SEC = 1.0
+
+# Read-path deadline guardrail (2026-07 incident: a missing index made a
+# read query effectively never return; the sync FastAPI handler running it
+# leaked its AnyIO worker thread and open DB connection on every poll, since
+# a thread stuck inside a C-level sqlite3 fetchall can't be cancelled from
+# outside). These bound any future slow/hung read to a clean interruption
+# instead of a leak -- see _open_readonly's progress handler.
+#
+# Read connections get a SHORT busy_timeout (unlike the 5s writer timeout
+# above): the DB is WAL mode, so readers don't block on the writer, and a
+# short cap bounds the one blind spot the progress handler can't see --
+# SQLite's busy-wait sleep doesn't tick the handler, so worst-case
+# connection lifetime is (deadline + this busy timeout).
+READONLY_BUSY_TIMEOUT_MS = 1000
+# >4x the ~1.2s worst healthy query at the 100k-row prune cap; with the 1s
+# busy cap above, a hung request still resolves under the UI's 8s client
+# abort (see ui/src/api.js REQUEST_TIMEOUT_MS) so the browser actually sees
+# the 503 instead of giving up first.
+READONLY_DEADLINE_SECONDS = 5.0
+# /health backs the Docker healthcheck (5s timeout, docker-compose.yaml).
+# 3s deadline + 1s busy cap = 4s, so a hung COUNT(*) still answers ok:false
+# inside the probe window instead of racing Docker's own timeout.
+HEALTH_READONLY_DEADLINE_SECONDS = 3.0
+# How often (in SQLite VM opcodes) the progress handler is polled during
+# sqlite3_step -- roughly every 1-10ms at typical opcode rates, far finer
+# than the deadlines above, with negligible overhead on healthy queries.
+PROGRESS_HANDLER_OPS = 10_000
 
 # Pinned event_id / column ordering shared by parsing, inserts, and reads.
 # feature_id/stream_epoch/tau/run_id/market_price are newer, nullable fields
@@ -174,6 +212,8 @@ RECENT_SQL = (
     f"SELECT {', '.join(EVENT_FIELDS)} FROM predictions " f"{NEWEST_ORDER_SQL} LIMIT ?"
 )
 
+ROWS_TOTAL_SQL = "SELECT COUNT(*) FROM predictions"
+
 # ticks.outcomes -> outcomes table. written_at is NOT part of the wire event —
 # it's stamped by the materializer at insert time (see insert_outcomes), which
 # is what the online-grading rule in evaluation.py hinges on.
@@ -208,6 +248,12 @@ INSERT_OUTCOME_SQL = (
 INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_pred_feature_ts ON predictions(feature_ts)",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_feature_ts ON outcomes(feature_ts)",
+    # Without this, the /predictions/performance "outcomes with no matching
+    # prediction" query (see PERFORMANCE_JOIN_SQL's caller, performance_window)
+    # full-scans predictions once per outcomes row in the window -- fine at a
+    # few hundred rows, but a full-table-scan-per-row once predictions holds
+    # ~100k rows (e.g. after a historical backfill), which never returns.
+    "CREATE INDEX IF NOT EXISTS idx_pred_feature_id ON predictions(feature_id)",
 ]
 
 # predictions LEFT JOIN outcomes, scoped by the predictions side's feature_ts
@@ -328,19 +374,27 @@ def _init_db_with_recovery_status(
         conn = sqlite3.connect(str(path))
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
 
-    schema_existed = (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions'"
-        ).fetchone()
-        is not None
-    )
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute(SCHEMA_SQL)
-    _ensure_columns(conn, "predictions", PREDICTIONS_MIGRATED_COLUMNS)
-    conn.execute(OUTCOMES_SCHEMA_SQL)
-    for index_sql in INDEX_SQL:
-        conn.execute(index_sql)
-    conn.commit()
+    try:
+        schema_existed = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions'"
+            ).fetchone()
+            is not None
+        )
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute(SCHEMA_SQL)
+        _ensure_columns(conn, "predictions", PREDICTIONS_MIGRATED_COLUMNS)
+        conn.execute(OUTCOMES_SCHEMA_SQL)
+        for index_sql in INDEX_SQL:
+            conn.execute(index_sql)
+        conn.commit()
+    except Exception:
+        # A lock outliving busy_timeout (e.g. the first idx_pred_feature_id
+        # build racing the other consumer supervisor's own init_db call at
+        # startup) must not leak this connection -- the caller's retry loop
+        # needs to be able to try again without accumulating open handles.
+        conn.close()
+        raise
     return conn, corrupt or not existed or not schema_existed
 
 
@@ -481,10 +535,37 @@ def _recent_rows(conn: sqlite3.Connection, limit: int) -> list[dict]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
-def _open_readonly(path: str | Path) -> sqlite3.Connection:
+def _open_readonly(
+    path: str | Path,
+    deadline_seconds: float | None = None,
+    busy_timeout_ms: int | None = None,
+) -> sqlite3.Connection:
+    # None sentinels (not plain default args) so the module globals are read
+    # at call time -- keeps monkeypatch.setattr(materializer, ...) working,
+    # same convention as every other tunable constant in this file.
+    if deadline_seconds is None:
+        deadline_seconds = READONLY_DEADLINE_SECONDS
+    if busy_timeout_ms is None:
+        busy_timeout_ms = READONLY_BUSY_TIMEOUT_MS
+
     uri = Path(path).resolve().as_uri() + "?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+
+    # Fires every PROGRESS_HANDLER_OPS opcodes *inside* sqlite3_step, so it
+    # reaches the C-level fetch loop a stuck Python thread can't otherwise be
+    # cancelled out of (see the 2026-07 incident). A truthy return aborts the
+    # running statement with sqlite3.OperationalError (SQLITE_INTERRUPT), a
+    # DatabaseError subclass the HTTP handlers already map to 503. If this
+    # callback itself ever raised, sqlite3 treats that as truthy too --
+    # failing toward interruption, never toward a hang.
+    #
+    # Caveat: SQLite's busy-wait sleep (above) doesn't tick this handler, so
+    # worst-case connection lifetime is (deadline_seconds + busy_timeout_ms).
+    deadline = time.monotonic() + deadline_seconds
+    conn.set_progress_handler(
+        lambda: time.monotonic() > deadline, PROGRESS_HANDLER_OPS
+    )
     return conn
 
 
@@ -507,11 +588,16 @@ def recent(path_or_conn: str | Path | sqlite3.Connection, limit: int) -> list[di
 
 
 def _rows_total(path: str | Path) -> tuple[int, bool]:
-    """Return (count, db_ok) via a short-lived read connection."""
+    """Return (count, db_ok) via a short-lived read connection.
+
+    Uses the shorter health deadline (not the default read deadline) so a
+    hung COUNT(*) still answers ok:false inside Docker's 5s healthcheck
+    probe window instead of racing it -- see HEALTH_READONLY_DEADLINE_SECONDS.
+    """
     try:
-        conn = _open_readonly(path)
+        conn = _open_readonly(path, deadline_seconds=HEALTH_READONLY_DEADLINE_SECONDS)
         try:
-            count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
+            count = conn.execute(ROWS_TOTAL_SQL).fetchone()[0]
             return count, True
         finally:
             conn.close()
@@ -690,18 +776,34 @@ def _reset_state(state: ConsumerState) -> None:
         state.startup_error = None
 
 
+def _is_fresh(last_event_ts: str | None, stale_seconds: float = STALE_SECONDS) -> bool:
+    """True if last_event_ts is a valid tz-aware timestamp within stale_seconds of now."""
+    if last_event_ts is None:
+        return False
+    try:
+        parsed = datetime.fromisoformat(last_event_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        return False
+    return (datetime.now(timezone.utc) - parsed).total_seconds() <= stale_seconds
+
+
 def health_snapshot(state: ConsumerState, db_path: str | Path) -> dict:
     """Build the /health (and /predictions/health) response body."""
     rows_total, db_ok = _rows_total(db_path)
     with state.lock:
-        return {
-            "ok": state.alive and state.outcomes_alive and state.broker_ok and db_ok,
-            "last_event_ts": state.last_event_ts,
+        last_event_ts = state.last_event_ts
+        base_ok = state.alive and state.outcomes_alive and state.broker_ok and db_ok
+        result = {
+            "last_event_ts": last_event_ts,
             "last_write_ts": state.last_write_ts,
             "rows_total": rows_total,
             "consume_errors": state.consume_errors,
             "write_errors": state.write_errors,
         }
+    result["ok"] = base_ok and _is_fresh(last_event_ts)
+    return result
 
 
 def validate_limit(limit: int) -> int:
@@ -1251,6 +1353,14 @@ def supervise_consumer(
 # ---------------------------------------------------------------------------
 
 _perf_cache: dict[int, tuple[float, dict]] = {}
+# Single-flight guard: while a window's payload is being computed, any other
+# request for that SAME window waits on this Event instead of starting its
+# own 100k-row computation. The read-path deadline (READONLY_DEADLINE_SECONDS)
+# bounds one request's duration but not how many can run concurrently -- a
+# degraded period with several distinct window_minutes cache misses could
+# still transiently hold one AnyIO worker thread each. This caps concurrent
+# heavy computations at one per window (at most 3, one per WINDOW_OPTIONS).
+_perf_inflight: dict[int, threading.Event] = {}
 _perf_cache_lock = threading.Lock()
 
 
@@ -1258,10 +1368,17 @@ def _reset_perf_cache() -> None:
     """Test seam: clear the cached /predictions/performance responses."""
     with _perf_cache_lock:
         _perf_cache.clear()
+        _perf_inflight.clear()
 
 
-def _newest_predictions_feature_ts(path: str | Path) -> str | None:
-    conn = _open_readonly(path)
+def _newest_predictions_feature_ts(
+    path_or_conn: str | Path | sqlite3.Connection,
+) -> str | None:
+    if isinstance(path_or_conn, sqlite3.Connection):
+        row = path_or_conn.execute("SELECT MAX(feature_ts) FROM predictions").fetchone()
+        return row[0] if row else None
+
+    conn = _open_readonly(path_or_conn)
     try:
         row = conn.execute("SELECT MAX(feature_ts) FROM predictions").fetchone()
         return row[0] if row else None
@@ -1277,11 +1394,23 @@ def _build_performance_payload(window_minutes: int) -> dict:
     far behind real time — still see a populated window.
     """
     now = datetime.now(timezone.utc)
-    newest_feature_ts = _newest_predictions_feature_ts(PREDICTIONS_DB_PATH)
-    anchor = _parse_iso(newest_feature_ts) or now
-    cutoff = _normalize_ts((anchor - timedelta(minutes=window_minutes)).isoformat())
 
-    window_data = performance_window(PREDICTIONS_DB_PATH, cutoff)
+    # One connection for the whole request, not one per query: makes the
+    # progress-handler deadline registered in _open_readonly apply to the
+    # ENTIRE request rather than resetting per-query (which could let two
+    # sub-deadline queries stack past the client's abort timeout -- see the
+    # READONLY_DEADLINE_SECONDS comment). Also removes a latent read/read
+    # race where the window could be computed against a newest_feature_ts
+    # from a moment that no longer matches what performance_window sees.
+    conn = _open_readonly(PREDICTIONS_DB_PATH)
+    try:
+        newest_feature_ts = _newest_predictions_feature_ts(conn)
+        anchor = _parse_iso(newest_feature_ts) or now
+        cutoff = _normalize_ts((anchor - timedelta(minutes=window_minutes)).isoformat())
+        window_data = performance_window(conn, cutoff)
+    finally:
+        conn.close()
+
     oldest_feature_ts = window_data["oldest_feature_ts"]
     # "complete" = the DB's retained history actually reaches back past the
     # cutoff, i.e. pruning/short history hasn't silently truncated the window.
@@ -1433,6 +1562,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="BTCSpiker Materializer", lifespan=lifespan)
 
+# Throttled so a read-path outage (10s UI polling, every tab, every window)
+# can't turn into one warning log line per poll -- see _log_read_timeout_throttled.
+_READ_TIMEOUT_LOG_INTERVAL_SEC = 30.0
+_read_timeout_count = 0
+_read_timeout_last_log_monotonic = 0.0
+_read_timeout_log_lock = threading.Lock()
+
+
+def _log_read_timeout_throttled(
+    exc: sqlite3.DatabaseError, *, elapsed_ms: float, **context
+) -> None:
+    """Log a read-path 503 at most once per _READ_TIMEOUT_LOG_INTERVAL_SEC,
+    distinguishing a deadline interruption (this guardrail working as
+    intended) from any other DatabaseError (e.g. a missing/corrupt DB)."""
+    global _read_timeout_count, _read_timeout_last_log_monotonic
+    is_interrupt = getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT
+    with _read_timeout_log_lock:
+        _read_timeout_count += 1
+        count = _read_timeout_count
+        now = time.monotonic()
+        should_log = (now - _read_timeout_last_log_monotonic) >= _READ_TIMEOUT_LOG_INTERVAL_SEC
+        if should_log:
+            _read_timeout_last_log_monotonic = now
+    if should_log:
+        kind = "deadline-interrupted" if is_interrupt else "database-error"
+        log.warning(
+            "read query failed (%s), returning 503 [count=%d elapsed_ms=%.0f %s]: %s",
+            kind,
+            count,
+            elapsed_ms,
+            context,
+            exc,
+        )
+
 
 @app.get("/predictions/recent")
 def get_recent(limit: int = 200):
@@ -1444,9 +1607,13 @@ def get_recent(limit: int = 200):
         ready = _state.ready
     if not ready:
         raise HTTPException(status_code=503, detail="materializer is not ready")
+    request_start = time.monotonic()
     try:
         rows = recent(PREDICTIONS_DB_PATH, limit)
     except sqlite3.DatabaseError as exc:
+        _log_read_timeout_throttled(
+            exc, elapsed_ms=(time.monotonic() - request_start) * 1000, limit=limit
+        )
         raise HTTPException(
             status_code=503, detail="predictions database unavailable"
         ) from exc
@@ -1465,17 +1632,53 @@ def get_performance(window_minutes: int = 30):
         raise HTTPException(status_code=503, detail="materializer is not ready")
 
     now = time.monotonic()
+    owner = False
     with _perf_cache_lock:
         cached = _perf_cache.get(window_minutes)
         if cached is not None and (now - cached[0]) < PERF_CACHE_SECONDS:
             return cached[1]
 
+        inflight_event = _perf_inflight.get(window_minutes)
+        if inflight_event is None:
+            # Nobody is computing this window right now -- we are.
+            inflight_event = threading.Event()
+            _perf_inflight[window_minutes] = inflight_event
+            owner = True
+
+    if not owner:
+        # Someone else is already computing this exact window -- wait for
+        # their result instead of starting a second full computation. Bound
+        # the wait to the read deadlines so a waiter can't outlive what the
+        # owner's own connection is already bounded to (see _open_readonly).
+        wait_timeout = READONLY_DEADLINE_SECONDS + (READONLY_BUSY_TIMEOUT_MS / 1000)
+        if inflight_event.wait(timeout=wait_timeout):
+            with _perf_cache_lock:
+                cached = _perf_cache.get(window_minutes)
+            if cached is not None:
+                return cached[1]
+        raise HTTPException(
+            status_code=503, detail="predictions database unavailable"
+        )
+
     try:
         payload = _build_performance_payload(window_minutes)
     except sqlite3.DatabaseError as exc:
+        _log_read_timeout_throttled(
+            exc,
+            elapsed_ms=(time.monotonic() - now) * 1000,
+            window_minutes=window_minutes,
+        )
         raise HTTPException(
             status_code=503, detail="predictions database unavailable"
         ) from exc
+    finally:
+        # Every exit path (success, interrupt, or any other error) must free
+        # the slot and wake waiters -- an owner that dies without doing this
+        # would wedge every future request for this window behind a dead
+        # Event.
+        with _perf_cache_lock:
+            _perf_inflight.pop(window_minutes, None)
+        inflight_event.set()
 
     with _perf_cache_lock:
         _perf_cache[window_minutes] = (time.monotonic(), payload)

@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -750,8 +751,9 @@ def test_health_snapshot_reflects_rows_and_counters(tmp_path):
     conn = materializer.init_db(db_path)
     materializer.insert_events(conn, [_event(f"e{i}", i) for i in range(3)])
 
+    fresh_ts = datetime.now(timezone.utc).isoformat()
     state = materializer.ConsumerState(
-        last_event_ts="2026-07-16T19:00:00+00:00",
+        last_event_ts=fresh_ts,
         last_write_ts="2026-07-16T19:00:01+00:00",
         consume_errors=2,
         write_errors=1,
@@ -764,7 +766,7 @@ def test_health_snapshot_reflects_rows_and_counters(tmp_path):
 
     assert snapshot == {
         "ok": True,
-        "last_event_ts": "2026-07-16T19:00:00+00:00",
+        "last_event_ts": fresh_ts,
         "last_write_ts": "2026-07-16T19:00:01+00:00",
         "rows_total": 3,
         "consume_errors": 2,
@@ -786,6 +788,38 @@ def test_health_snapshot_ok_false_when_broker_probe_failed(tmp_path):
     db_path = tmp_path / "test.db"
     materializer.init_db(db_path)
     state = materializer.ConsumerState(alive=True, broker_ok=False)
+
+    snapshot = materializer.health_snapshot(state, db_path)
+
+    assert snapshot["ok"] is False
+
+
+def test_health_snapshot_ok_false_when_last_event_ts_is_stale(tmp_path):
+    """A wedged consumer thread (e.g. stuck retrying a Kafka commit after a
+    rebalance) stays `alive` forever without ever polling a new message.
+    ok must go False once last_event_ts stops advancing, so /system/status
+    (and anything else reading /health) reports the stall truthfully."""
+    db_path = tmp_path / "test.db"
+    materializer.init_db(db_path)
+    stale_ts = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=materializer.STALE_SECONDS + 1)
+    ).isoformat()
+    state = materializer.ConsumerState(
+        last_event_ts=stale_ts, alive=True, outcomes_alive=True, broker_ok=True
+    )
+
+    snapshot = materializer.health_snapshot(state, db_path)
+
+    assert snapshot["ok"] is False
+
+
+def test_health_snapshot_ok_false_when_last_event_ts_is_none(tmp_path):
+    db_path = tmp_path / "test.db"
+    materializer.init_db(db_path)
+    state = materializer.ConsumerState(
+        last_event_ts=None, alive=True, outcomes_alive=True, broker_ok=True
+    )
 
     snapshot = materializer.health_snapshot(state, db_path)
 
@@ -1087,6 +1121,370 @@ def test_market_price_round_trips_through_insert_and_recent(tmp_path):
 
     rows = materializer.recent(conn, 10)
     assert rows[0]["market_price"] == 65432.1
+
+
+def test_performance_unmatched_outcomes_query_uses_index_not_full_scan(tmp_path):
+    """The /predictions/performance handler's "outcomes with no matching
+    prediction" query correlates on predictions.feature_id. Without an index
+    on that column, SQLite has to full-scan `predictions` once per row of
+    `outcomes` in the window — fine at dev-sized row counts, but a real
+    production incident once the table holds ~100k rows (e.g. after a
+    historical backfill): the query never returns, the request handler
+    leaks its thread and DB connection forever, and CPU pegs until the
+    container is killed and restarted.
+    """
+    conn = materializer.init_db(tmp_path / "perf.db")
+
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN "
+        "SELECT COUNT(*) FROM outcomes o "
+        "WHERE o.feature_ts >= ? "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM predictions p WHERE p.feature_id = o.feature_id"
+        ")",
+        ("2026-01-01T00:00:00+00:00",),
+    ).fetchall()
+    conn.close()
+
+    detail = "\n".join(row[-1] for row in plan)
+    assert "SCAN p" not in detail, (
+        f"unmatched-outcomes query full-scans predictions per outcome row "
+        f"(no index on predictions.feature_id) -- query plan:\n{detail}"
+    )
+
+
+# Bounded recursive CTE for deadline tests: this repo has no pytest-timeout
+# plugin, so a broken guardrail must fail the test slowly (a few seconds),
+# never hang the suite. A correctly-firing progress handler interrupts this
+# almost immediately regardless of the bound.
+SLOW_SQL = (
+    "WITH RECURSIVE c(x) AS ("
+    "  SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 100000000"
+    ") SELECT COUNT(*) FROM c"
+)
+# Same query, but accepting (and trivially using) one bound parameter, so it
+# can stand in for PERFORMANCE_JOIN_SQL, which performance_window() always
+# calls with (cutoff,).
+SLOW_SQL_ONE_PARAM = (
+    "WITH RECURSIVE c(x) AS ("
+    "  SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 100000000"
+    ") SELECT COUNT(*) FROM c WHERE ? IS NOT NULL"
+)
+
+
+def test_readonly_connection_interrupts_query_past_deadline(tmp_path):
+    """The progress handler must abort a query that outruns its deadline --
+    this is what stops a future slow/hung read from leaking its thread and
+    connection forever, per the 2026-07 incident."""
+    conn = materializer.init_db(tmp_path / "perf.db")
+    conn.close()
+
+    ro = materializer._open_readonly(tmp_path / "perf.db", deadline_seconds=0.1)
+    t0 = time.monotonic()
+    with pytest.raises(sqlite3.OperationalError) as excinfo:
+        ro.execute(SLOW_SQL).fetchall()
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 2.0, f"took {elapsed}s -- deadline should interrupt almost immediately"
+    assert excinfo.value.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT
+
+    # The connection itself isn't wedged by the interrupt -- it still closes
+    # cleanly, and a fresh statement on it fails the way a closed connection
+    # should (not "still stuck").
+    ro.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        ro.execute("SELECT 1")
+
+
+def test_readonly_deadline_constant_is_read_at_call_time_for_monkeypatch(
+    tmp_path, monkeypatch
+):
+    """_open_readonly's deadline_seconds default must be a None-sentinel
+    resolved inside the function body, not a plain default argument -- a
+    plain default binds READONLY_DEADLINE_SECONDS at import time, silently
+    breaking monkeypatch.setattr(materializer, "READONLY_DEADLINE_SECONDS",
+    ...), which is this test suite's standard seam for every other module
+    constant."""
+    conn = materializer.init_db(tmp_path / "perf.db")
+    conn.close()
+    monkeypatch.setattr(materializer, "READONLY_DEADLINE_SECONDS", 0.1)
+
+    ro = materializer._open_readonly(tmp_path / "perf.db")  # no explicit arg
+    t0 = time.monotonic()
+    with pytest.raises(sqlite3.OperationalError):
+        ro.execute(SLOW_SQL).fetchall()
+    elapsed = time.monotonic() - t0
+    assert elapsed < 2.0
+    ro.close()
+
+
+def test_health_short_deadline_reports_db_not_ok_instead_of_outrunning_docker_probe(
+    tmp_path, monkeypatch
+):
+    """_rows_total backs /health, which backs Docker's healthcheck (5s
+    timeout). A hung COUNT(*) must answer ok:false well inside that window
+    rather than racing Docker's own timeout -- see
+    HEALTH_READONLY_DEADLINE_SECONDS."""
+    conn = materializer.init_db(tmp_path / "perf.db")
+    conn.close()
+    monkeypatch.setattr(materializer, "ROWS_TOTAL_SQL", SLOW_SQL)
+    monkeypatch.setattr(materializer, "HEALTH_READONLY_DEADLINE_SECONDS", 0.1)
+
+    t0 = time.monotonic()
+    count, ok = materializer._rows_total(tmp_path / "perf.db")
+    elapsed = time.monotonic() - t0
+
+    assert (count, ok) == (0, False)
+    assert elapsed < 2.0, f"took {elapsed}s -- should report not-ok well under Docker's 5s probe"
+
+
+def test_slow_performance_query_returns_503_instead_of_hanging(tmp_path, monkeypatch):
+    """End-to-end proof of the incident path: a slow/hung PERFORMANCE_JOIN_SQL
+    must surface as a prompt 503 through the actual HTTP handler, not a
+    hang -- exercising deadline interrupt -> sqlite3.OperationalError ->
+    DatabaseError catch -> 503, all the way from the real endpoint."""
+    db_path = tmp_path / "perf.db"
+    materializer.init_db(db_path).close()
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "READONLY_DEADLINE_SECONDS", 0.1)
+    monkeypatch.setattr(materializer, "PERFORMANCE_JOIN_SQL", SLOW_SQL_ONE_PARAM)
+    materializer._state.ready = True
+    materializer._reset_perf_cache()
+    client = TestClient(materializer.app, raise_server_exceptions=False)
+
+    t0 = time.monotonic()
+    response = client.get("/predictions/performance?window_minutes=30")
+    elapsed = time.monotonic() - t0
+
+    assert response.status_code == 503
+    assert elapsed < 3.0, f"took {elapsed}s -- should 503 near the deadline, not hang"
+
+
+def test_repeated_slow_requests_do_not_exhaust_workers_then_normal_request_succeeds(
+    tmp_path, monkeypatch
+):
+    """The actual anti-leak property: a single interrupted request proves
+    the query stops, but not that the service SURVIVES an outage. Fire
+    several concurrent slow requests (each must 503 quickly, not leak its
+    thread/connection), then restore the real query and confirm a normal
+    request still succeeds fast -- i.e. no worker-pool exhaustion."""
+    db_path = tmp_path / "perf.db"
+    materializer.init_db(db_path).close()
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    monkeypatch.setattr(materializer, "READONLY_DEADLINE_SECONDS", 0.1)
+    monkeypatch.setattr(materializer, "PERFORMANCE_JOIN_SQL", SLOW_SQL_ONE_PARAM)
+    materializer._state.ready = True
+    materializer._reset_perf_cache()
+    client = TestClient(materializer.app, raise_server_exceptions=False)
+
+    results = []
+    results_lock = threading.Lock()
+
+    def fire(window_minutes):
+        # All-distinct windows so the single-flight guard (tested separately)
+        # doesn't collapse these into fewer than N computations -- this test
+        # is specifically about N independent slow computations each
+        # resolving, not about dedup.
+        resp = client.get(f"/predictions/performance?window_minutes={window_minutes}")
+        with results_lock:
+            results.append(resp)
+
+    windows = [5, 12, 30, 45, 60]
+    threads = [threading.Thread(target=fire, args=(w,)) for w in windows]
+    t0 = time.monotonic()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 5.0, f"took {elapsed}s -- concurrent slow requests should all resolve promptly"
+    assert len(results) == len(windows)
+    assert all(r.status_code == 503 for r in results)
+
+    # Recovery: restore the real query and confirm the service still answers
+    # fast -- proves the slow requests didn't leak threads/connections.
+    monkeypatch.undo()
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    materializer._state.ready = True
+    materializer._reset_perf_cache()
+
+    t0 = time.monotonic()
+    response = client.get("/predictions/performance?window_minutes=30")
+    elapsed = time.monotonic() - t0
+    assert response.status_code == 200
+    assert elapsed < 2.0, f"recovery request took {elapsed}s -- workers should not be exhausted"
+
+
+def test_concurrent_cache_misses_for_same_window_run_one_computation(
+    tmp_path, monkeypatch
+):
+    """Single-flight guard: N concurrent cache misses for the SAME window
+    must collapse into exactly one heavy computation, all callers sharing
+    its result -- otherwise a degraded period lets every concurrent poll
+    start its own full 100k-row computation. A different window must NOT be
+    collapsed into the same in-flight computation."""
+    db_path = tmp_path / "perf.db"
+    materializer.init_db(db_path).close()
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    materializer._state.ready = True
+    materializer._reset_perf_cache()
+
+    call_count = 0
+    call_count_lock = threading.Lock()
+    release = threading.Event()
+
+    def slow_build(window_minutes):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        assert release.wait(timeout=5.0), "test setup bug: release was never set"
+        return {"window_minutes": window_minutes, "marker": "computed"}
+
+    monkeypatch.setattr(materializer, "_build_performance_payload", slow_build)
+    client = TestClient(materializer.app, raise_server_exceptions=False)
+
+    results = []
+    results_lock = threading.Lock()
+
+    def fire():
+        resp = client.get("/predictions/performance?window_minutes=30")
+        with results_lock:
+            results.append(resp)
+
+    threads = [threading.Thread(target=fire) for _ in range(5)]
+    for t in threads:
+        t.start()
+    time.sleep(0.3)  # let all 5 land inside the handler and register as waiters
+    release.set()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    assert call_count == 1, (
+        f"expected exactly one computation for {len(threads)} concurrent "
+        f"same-window requests, got {call_count}"
+    )
+    assert len(results) == 5
+    for resp in results:
+        assert resp.status_code == 200
+        assert resp.json()["marker"] == "computed"
+
+    # Companion: a different window is NOT collapsed into the same computation.
+    release.clear()
+    other_result = []
+
+    def fire_other():
+        other_result.append(
+            client.get("/predictions/performance?window_minutes=60")
+        )
+
+    other_thread = threading.Thread(target=fire_other)
+    other_thread.start()
+    time.sleep(0.2)
+    assert call_count == 2, "a distinct window must start its own computation"
+    release.set()
+    other_thread.join(timeout=5.0)
+    assert other_result[0].status_code == 200
+
+
+def _populated_db_missing_new_index(tmp_path, name):
+    """A WAL-mode, populated DB that predates idx_pred_feature_id -- simulates
+    a materializer instance mid-rollout of the index fix, so the migration
+    path (both consumer supervisors call init_db() concurrently at startup)
+    has real work to do rather than a no-op CREATE INDEX IF NOT EXISTS."""
+    db_path = tmp_path / name
+    conn = materializer.init_db(db_path)
+    materializer.insert_events(conn, [_event(f"e{i}", i) for i in range(500)])
+    conn.execute("DROP INDEX idx_pred_feature_id")
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_index_migration_on_populated_db_waits_out_write_lock(tmp_path, monkeypatch):
+    """Both consumer supervisors call init_db() concurrently at startup. If a
+    writer holds a RESERVED lock when the (now-missing) idx_pred_feature_id's
+    CREATE INDEX runs, init_db must wait it out via busy_timeout and succeed
+    -- not raise and abort startup -- as long as the lock releases within the
+    timeout."""
+    db_path = _populated_db_missing_new_index(tmp_path, "populated.db")
+    monkeypatch.setattr(materializer, "BUSY_TIMEOUT_MS", 2000)
+
+    # check_same_thread=False: the releaser thread below commits/closes this
+    # connection, not the thread that opened it.
+    locker = sqlite3.connect(str(db_path), check_same_thread=False)
+    locker.execute("BEGIN IMMEDIATE")
+    locker.execute("UPDATE predictions SET score = score WHERE event_id = 'e0'")
+
+    def release_after_delay():
+        time.sleep(0.3)
+        locker.commit()
+        locker.close()
+
+    releaser = threading.Thread(target=release_after_delay)
+    releaser.start()
+
+    t0 = time.monotonic()
+    conn = materializer.init_db(db_path)
+    elapsed = time.monotonic() - t0
+    releaser.join()
+
+    assert elapsed < 2.0, f"init_db took {elapsed}s -- should wait out the ~0.3s lock, not the full timeout"
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT 1 FROM predictions WHERE feature_id = ?", ("x",)
+    ).fetchall()
+    assert any("idx_pred_feature_id" in row[-1] for row in plan)
+    conn.close()
+
+
+def test_index_migration_raises_cleanly_and_closes_connection_when_lock_outlives_timeout(
+    tmp_path, monkeypatch
+):
+    """If the lock outlives busy_timeout, init_db must fail fast (not hang)
+    and must not leak the connection it opened -- the daemon thread running
+    this at startup should be able to retry cleanly rather than accumulate
+    unclosed handles across restarts."""
+    db_path = _populated_db_missing_new_index(tmp_path, "populated.db")
+    monkeypatch.setattr(materializer, "BUSY_TIMEOUT_MS", 200)
+
+    # Spy on the connection init_db opens internally -- it raises before
+    # returning it, so this is the only way to get a handle on it and check
+    # whether it was actually closed.
+    opened = []
+    real_open_verified = materializer._open_verified
+
+    def spy_open_verified(path):
+        conn = real_open_verified(path)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(materializer, "_open_verified", spy_open_verified)
+
+    locker = sqlite3.connect(str(db_path))
+    locker.execute("BEGIN IMMEDIATE")
+    locker.execute("UPDATE predictions SET score = score WHERE event_id = 'e0'")
+
+    t0 = time.monotonic()
+    with pytest.raises(sqlite3.OperationalError):
+        materializer.init_db(db_path)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, f"init_db took {elapsed}s -- should fail fast on lock timeout, not hang"
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")  # only raises if init_db closed it on failure
+
+    locker.commit()
+    locker.close()
+
+    # Recovery: a subsequent call, lock now released, succeeds cleanly --
+    # proves the failed attempt didn't corrupt or wedge the DB file.
+    conn = materializer.init_db(db_path)
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT 1 FROM predictions WHERE feature_id = ?", ("x",)
+    ).fetchall()
+    assert any("idx_pred_feature_id" in row[-1] for row in plan)
+    conn.close()
 
 
 def test_outcomes_consumer_skips_malformed_message_and_commits_past_it(
