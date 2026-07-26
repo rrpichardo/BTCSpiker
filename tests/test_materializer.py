@@ -797,8 +797,8 @@ def test_health_snapshot_ok_false_when_broker_probe_failed(tmp_path):
 def test_health_snapshot_ok_false_when_last_event_ts_is_stale(tmp_path):
     """A wedged consumer thread (e.g. stuck retrying a Kafka commit after a
     rebalance) stays `alive` forever without ever polling a new message.
-    ok must go False once last_event_ts stops advancing, so the container
-    healthcheck's `restart: on-failure` can recover it."""
+    ok must go False once last_event_ts stops advancing, so /system/status
+    (and anything else reading /health) reports the stall truthfully."""
     db_path = tmp_path / "test.db"
     materializer.init_db(db_path)
     stale_ts = (

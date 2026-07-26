@@ -89,8 +89,11 @@ ADAPTIVE_PERCENTILE = 85
 # so /health's own `ok` and the /system/status rollup agree on what "stale"
 # means. A consumer thread can stay alive while wedged retrying a Kafka
 # commit (e.g. UNKNOWN_MEMBER_ID after a rebalance) without ever polling a
-# new message — this catches that by requiring last_event_ts to keep moving,
-# which lets the container healthcheck's `restart: on-failure` recover it.
+# new message — this catches that by requiring last_event_ts to keep moving.
+# Note: this makes /health honest (and visible via /system/status); it does
+# not by itself trigger a restart. `restart: on-failure` in docker-compose
+# only fires on process exit, not on a HEALTHCHECK going unhealthy, and this
+# stack runs no Swarm/autoheal watcher that acts on that status.
 STALE_SECONDS = float(os.getenv("SYSTEM_MATERIALIZER_STALE_SECONDS", "60"))
 
 # Plan decisions — module constants, not configurable.
