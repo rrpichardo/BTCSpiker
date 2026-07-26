@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -750,8 +751,9 @@ def test_health_snapshot_reflects_rows_and_counters(tmp_path):
     conn = materializer.init_db(db_path)
     materializer.insert_events(conn, [_event(f"e{i}", i) for i in range(3)])
 
+    fresh_ts = datetime.now(timezone.utc).isoformat()
     state = materializer.ConsumerState(
-        last_event_ts="2026-07-16T19:00:00+00:00",
+        last_event_ts=fresh_ts,
         last_write_ts="2026-07-16T19:00:01+00:00",
         consume_errors=2,
         write_errors=1,
@@ -764,7 +766,7 @@ def test_health_snapshot_reflects_rows_and_counters(tmp_path):
 
     assert snapshot == {
         "ok": True,
-        "last_event_ts": "2026-07-16T19:00:00+00:00",
+        "last_event_ts": fresh_ts,
         "last_write_ts": "2026-07-16T19:00:01+00:00",
         "rows_total": 3,
         "consume_errors": 2,
@@ -786,6 +788,38 @@ def test_health_snapshot_ok_false_when_broker_probe_failed(tmp_path):
     db_path = tmp_path / "test.db"
     materializer.init_db(db_path)
     state = materializer.ConsumerState(alive=True, broker_ok=False)
+
+    snapshot = materializer.health_snapshot(state, db_path)
+
+    assert snapshot["ok"] is False
+
+
+def test_health_snapshot_ok_false_when_last_event_ts_is_stale(tmp_path):
+    """A wedged consumer thread (e.g. stuck retrying a Kafka commit after a
+    rebalance) stays `alive` forever without ever polling a new message.
+    ok must go False once last_event_ts stops advancing, so the container
+    healthcheck's `restart: on-failure` can recover it."""
+    db_path = tmp_path / "test.db"
+    materializer.init_db(db_path)
+    stale_ts = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=materializer.STALE_SECONDS + 1)
+    ).isoformat()
+    state = materializer.ConsumerState(
+        last_event_ts=stale_ts, alive=True, outcomes_alive=True, broker_ok=True
+    )
+
+    snapshot = materializer.health_snapshot(state, db_path)
+
+    assert snapshot["ok"] is False
+
+
+def test_health_snapshot_ok_false_when_last_event_ts_is_none(tmp_path):
+    db_path = tmp_path / "test.db"
+    materializer.init_db(db_path)
+    state = materializer.ConsumerState(
+        last_event_ts=None, alive=True, outcomes_alive=True, broker_ok=True
+    )
 
     snapshot = materializer.health_snapshot(state, db_path)
 

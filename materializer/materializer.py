@@ -85,6 +85,14 @@ DRIFT_PR_AUC_RATIO = float(os.getenv("DRIFT_PR_AUC_RATIO", "0.7"))
 BASELINE_VOL_THRESHOLD = float(os.getenv("BASELINE_VOL_THRESHOLD", "0.000048"))
 ADAPTIVE_PERCENTILE = 85
 
+# Same env var name/default as api/system.py's _materializer_stale_seconds,
+# so /health's own `ok` and the /system/status rollup agree on what "stale"
+# means. A consumer thread can stay alive while wedged retrying a Kafka
+# commit (e.g. UNKNOWN_MEMBER_ID after a rebalance) without ever polling a
+# new message — this catches that by requiring last_event_ts to keep moving,
+# which lets the container healthcheck's `restart: on-failure` recover it.
+STALE_SECONDS = float(os.getenv("SYSTEM_MATERIALIZER_STALE_SECONDS", "60"))
+
 # Plan decisions — module constants, not configurable.
 BATCH_MAX_SIZE = 200
 BATCH_WINDOW_SEC = 1.0
@@ -690,18 +698,34 @@ def _reset_state(state: ConsumerState) -> None:
         state.startup_error = None
 
 
+def _is_fresh(last_event_ts: str | None, stale_seconds: float = STALE_SECONDS) -> bool:
+    """True if last_event_ts is a valid tz-aware timestamp within stale_seconds of now."""
+    if last_event_ts is None:
+        return False
+    try:
+        parsed = datetime.fromisoformat(last_event_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        return False
+    return (datetime.now(timezone.utc) - parsed).total_seconds() <= stale_seconds
+
+
 def health_snapshot(state: ConsumerState, db_path: str | Path) -> dict:
     """Build the /health (and /predictions/health) response body."""
     rows_total, db_ok = _rows_total(db_path)
     with state.lock:
-        return {
-            "ok": state.alive and state.outcomes_alive and state.broker_ok and db_ok,
-            "last_event_ts": state.last_event_ts,
+        last_event_ts = state.last_event_ts
+        base_ok = state.alive and state.outcomes_alive and state.broker_ok and db_ok
+        result = {
+            "last_event_ts": last_event_ts,
             "last_write_ts": state.last_write_ts,
             "rows_total": rows_total,
             "consume_errors": state.consume_errors,
             "write_errors": state.write_errors,
         }
+    result["ok"] = base_ok and _is_fresh(last_event_ts)
+    return result
 
 
 def validate_limit(limit: int) -> int:
