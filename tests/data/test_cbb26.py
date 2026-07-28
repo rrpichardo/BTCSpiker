@@ -129,18 +129,29 @@ def test_download_reuses_matching_local_file(tmp_path: Path):
             destination.write_bytes(b"dump")
         return str(destination)
 
-    first = download_shard_to_cache(shard, tmp_path, download, disk_usage=lambda _: (0, 0, 2**33))
-    again = download_shard_to_cache(shard, tmp_path, download, disk_usage=lambda _: (0, 0, 2**33))
+    first = download_shard_to_cache(
+        shard, tmp_path, download, disk_usage=lambda _: (0, 0, 2**33)
+    )
+    again = download_shard_to_cache(
+        shard, tmp_path, download, disk_usage=lambda _: (0, 0, 2**33)
+    )
     assert again == first
     assert sha256_file(again) == hashlib.sha256(b"dump").hexdigest()
     assert [call["filename"] for call in calls] == [shard.sidecar_path, shard.dump_path]
-    assert all(call["revision"] == "c1e89eded9915e1c75a18911298edfbbbe4050ce" for call in calls)
+    assert all(
+        call["revision"] == "c1e89eded9915e1c75a18911298edfbbbe4050ce" for call in calls
+    )
     assert not list(first.parent.glob(".download*"))
 
 
 def test_download_does_not_accept_dump_without_valid_sidecar(tmp_path: Path):
     shard = _shard()
-    target = tmp_path / "c1e89eded9915e1c75a18911298edfbbbe4050ce" / "2026-04-24" / "BTC-USD.dump"
+    target = (
+        tmp_path
+        / "c1e89eded9915e1c75a18911298edfbbbe4050ce"
+        / "2026-04-24"
+        / "BTC-USD.dump"
+    )
     target.parent.mkdir(parents=True)
     target.write_bytes(b"dump")
 
@@ -151,13 +162,22 @@ def test_download_does_not_accept_dump_without_valid_sidecar(tmp_path: Path):
         return str(downloaded)
 
     with pytest.raises(CBB26IntegrityError, match="product_id"):
-        download_shard_to_cache(shard, tmp_path, download, disk_usage=lambda _: (0, 0, 2**33))
+        download_shard_to_cache(
+            shard, tmp_path, download, disk_usage=lambda _: (0, 0, 2**33)
+        )
 
 
 def test_download_rejects_low_space_before_calling_hub(tmp_path: Path):
     shard = _shard()
-    with pytest.raises(InsufficientWorkingSpace, match="observed=1 required=4294967296"):
-        download_shard_to_cache(shard, tmp_path, lambda **_: pytest.fail("downloaded"), disk_usage=lambda _: (0, 0, 1))
+    with pytest.raises(
+        InsufficientWorkingSpace, match="observed=1 required=4294967296"
+    ):
+        download_shard_to_cache(
+            shard,
+            tmp_path,
+            lambda **_: pytest.fail("downloaded"),
+            disk_usage=lambda _: (0, 0, 1),
+        )
 
 
 def test_space_check_uses_nearest_existing_parent(tmp_path: Path):
@@ -170,7 +190,12 @@ def test_space_check_uses_nearest_existing_parent(tmp_path: Path):
         return (0, 0, 1)
 
     with pytest.raises(InsufficientWorkingSpace):
-        download_shard_to_cache(_shard(), missing_root, lambda **_: pytest.fail("downloaded"), disk_usage=disk_usage)
+        download_shard_to_cache(
+            _shard(),
+            missing_root,
+            lambda **_: pytest.fail("downloaded"),
+            disk_usage=disk_usage,
+        )
     assert checked == [tmp_path]
 
 
@@ -190,35 +215,74 @@ def test_restore_fails_for_count_mismatch_or_bad_temporal_integrity(tmp_path: Pa
     sidecar = _sidecar()
 
     class Cursor:
-        def execute(self, *_): pass
-        def fetchone(self): return (0,)
+        def execute(self, *_):
+            pass
+
+        def fetchone(self):
+            return (0,)
+
     class Connection:
-        def cursor(self): return Cursor()
-        def commit(self): pass
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
 
     with pytest.raises(CBB26IntegrityError, match="row count"):
-        restore_shard(shard, dump, sidecar, Connection(), cache_root=tmp_path, run=lambda *_args, **_kwargs: type("R", (), {"returncode": 0, "stderr": ""})(), disk_usage=lambda _: (0, 0, 2**33))
+        restore_shard(
+            shard,
+            dump,
+            sidecar,
+            Connection(),
+            cache_root=tmp_path,
+            run=lambda *_args, **_kwargs: type(
+                "R", (), {"returncode": 0, "stderr": ""}
+            )(),
+            disk_usage=lambda _: (0, 0, 2**33),
+        )
 
 
 @pytest.mark.parametrize(
     ("result_values", "message"),
-    [([1, 1, 1, 1, 0], "missing anchor"), ([1, 1, 1, 1, 1, 1], "outside sidecar UTC bounds")],
+    [
+        ([1, 1, 1, 1, 0], "missing anchor"),
+        ([1, 1, 1, 1, 1, 1], "outside sidecar UTC bounds"),
+    ],
 )
-def test_restore_rejects_missing_anchor_and_out_of_window_rows(tmp_path: Path, result_values, message: str):
+def test_restore_rejects_missing_anchor_and_out_of_window_rows(
+    tmp_path: Path, result_values, message: str
+):
     shard = _shard()
     dump = tmp_path / "x.dump"
     dump.write_bytes(b"dump")
     sidecar = _sidecar()
 
     class Cursor:
-        def execute(self, *_): pass
-        def fetchone(self): return (result_values.pop(0),)
+        def execute(self, *_):
+            pass
+
+        def fetchone(self):
+            return (result_values.pop(0),)
+
     class Connection:
-        def cursor(self): return Cursor()
-        def commit(self): pytest.fail("must not commit an invalid restore")
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pytest.fail("must not commit an invalid restore")
 
     with pytest.raises(CBB26IntegrityError, match=message):
-        restore_shard(shard, dump, sidecar, Connection(), cache_root=tmp_path, run=lambda *_args, **_kwargs: type("R", (), {"returncode": 0, "stderr": ""})(), disk_usage=lambda _: (0, 0, 2**33))
+        restore_shard(
+            shard,
+            dump,
+            sidecar,
+            Connection(),
+            cache_root=tmp_path,
+            run=lambda *_args, **_kwargs: type(
+                "R", (), {"returncode": 0, "stderr": ""}
+            )(),
+            disk_usage=lambda _: (0, 0, 2**33),
+        )
 
 
 @pytest.mark.parametrize(
@@ -235,42 +299,76 @@ def test_restore_requires_valid_sidecar_utc_bounds(tmp_path: Path, overrides):
     dump.write_bytes(b"dump")
     with pytest.raises(CBB26IntegrityError, match="UTC bounds"):
         restore_shard(
-            _shard(), dump, _sidecar(**overrides), object(), cache_root=tmp_path,
-            run=lambda *_args, **_kwargs: pytest.fail("restored"), disk_usage=lambda _: (0, 0, 2**33),
+            _shard(),
+            dump,
+            _sidecar(**overrides),
+            object(),
+            cache_root=tmp_path,
+            run=lambda *_args, **_kwargs: pytest.fail("restored"),
+            disk_usage=lambda _: (0, 0, 2**33),
         )
 
 
 def test_restore_runs_pg_restore_inside_compose_with_import_path(tmp_path: Path):
-    dump = tmp_path / "c1e89eded9915e1c75a18911298edfbbbe4050ce" / "2026-04-24" / "BTC-USD.dump"
+    dump = (
+        tmp_path
+        / "c1e89eded9915e1c75a18911298edfbbbe4050ce"
+        / "2026-04-24"
+        / "BTC-USD.dump"
+    )
     dump.parent.mkdir(parents=True)
     dump.write_bytes(b"dump")
     commands = []
 
     class Cursor:
         values = iter([1, 1, 1, 1, 1, 0, 0, 0, 0])
-        def execute(self, *_): pass
-        def fetchone(self): return (next(self.values),)
+
+        def execute(self, *_):
+            pass
+
+        def fetchone(self):
+            return (next(self.values),)
+
     class Connection:
-        def cursor(self): return Cursor()
-        def commit(self): pass
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
 
     restore_shard(
-        _shard(), dump, _sidecar(), Connection(), cache_root=tmp_path,
-        run=lambda command, **_: commands.append(command) or type("R", (), {"returncode": 0, "stderr": ""})(),
+        _shard(),
+        dump,
+        _sidecar(),
+        Connection(),
+        cache_root=tmp_path,
+        run=lambda command, **_: commands.append(command)
+        or type("R", (), {"returncode": 0, "stderr": ""})(),
         disk_usage=lambda _: (0, 0, 2**33),
     )
     compose_prefix = [
-        "docker", "compose", "-f", str(Path(__file__).resolve().parents[2] / "docker-compose.data.yaml"),
-        "exec", "-T", "cbb26-staging",
+        "docker",
+        "compose",
+        "-f",
+        str(Path(__file__).resolve().parents[2] / "docker-compose.data.yaml"),
+        "exec",
+        "-T",
+        "cbb26-staging",
     ]
     assert commands == [
-        compose_prefix + [
-            "psql", "--dbname=postgresql://btcspiker:btcspiker@127.0.0.1:5432/btcspiker",
+        compose_prefix
+        + [
+            "psql",
+            "--dbname=postgresql://btcspiker:btcspiker@127.0.0.1:5432/btcspiker",
             "--set=ON_ERROR_STOP=1",
             "--command=TRUNCATE cbb26_hf_export_staging.orderbook_replay_anchors, cbb26_hf_export_staging.orderbook_second_deltas, cbb26_hf_export_staging.orderbook_checkpoints, cbb26_hf_export_staging.orderbook_replay_metadata",
         ],
-        compose_prefix + [
-            "pg_restore", "--data-only", "--no-owner", "--no-privileges",
+        compose_prefix
+        + [
+            "pg_restore",
+            "--data-only",
+            "--no-owner",
+            "--no-privileges",
             "--schema=cbb26_hf_export_staging",
             "--dbname=postgresql://btcspiker:btcspiker@127.0.0.1:5432/btcspiker",
             "/imports/c1e89eded9915e1c75a18911298edfbbbe4050ce/2026-04-24/BTC-USD.dump",
@@ -279,27 +377,50 @@ def test_restore_runs_pg_restore_inside_compose_with_import_path(tmp_path: Path)
 
 
 def test_compose_mount_matches_required_cbb26_cache_root():
-    compose = (Path(__file__).resolve().parents[2] / "docker-compose.data.yaml").read_text()
-    assert "${BTCSPIKER_CBB26_CACHE_ROOT:-./data/coinbase_history/cache/cbb26}:/imports:ro" in compose
+    compose = (
+        Path(__file__).resolve().parents[2] / "docker-compose.data.yaml"
+    ).read_text()
+    assert (
+        "${BTCSPIKER_CBB26_CACHE_ROOT:-./data/coinbase_history/cache/cbb26}:/imports:ro"
+        in compose
+    )
 
 
 def test_restore_passes_explicit_compose_environment(tmp_path: Path):
-    dump = tmp_path / "c1e89eded9915e1c75a18911298edfbbbe4050ce" / "2026-04-24" / "BTC-USD.dump"
+    dump = (
+        tmp_path
+        / "c1e89eded9915e1c75a18911298edfbbbe4050ce"
+        / "2026-04-24"
+        / "BTC-USD.dump"
+    )
     dump.parent.mkdir(parents=True)
     dump.write_bytes(b"dump")
     observed_environments = []
 
     class Cursor:
         values = iter([1, 1, 1, 1, 1, 0, 0, 0, 0])
-        def execute(self, *_): pass
-        def fetchone(self): return (next(self.values),)
+
+        def execute(self, *_):
+            pass
+
+        def fetchone(self):
+            return (next(self.values),)
+
     class Connection:
-        def cursor(self): return Cursor()
-        def commit(self): pass
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
 
     restore_shard(
-        _shard(), dump, _sidecar(), Connection(), cache_root=tmp_path,
-        run=lambda _command, **kwargs: observed_environments.append(kwargs.get("env")) or type("R", (), {"returncode": 0, "stderr": ""})(),
+        _shard(),
+        dump,
+        _sidecar(),
+        Connection(),
+        cache_root=tmp_path,
+        run=lambda _command, **kwargs: observed_environments.append(kwargs.get("env"))
+        or type("R", (), {"returncode": 0, "stderr": ""})(),
         disk_usage=lambda _: (0, 0, 2**33),
         compose_environment={"BTCSPIKER_CBB26_CACHE_ROOT": str(tmp_path)},
     )
@@ -315,15 +436,24 @@ def test_restore_nonzero_pg_restore_raises_without_commit(tmp_path: Path):
     dump.write_bytes(b"dump")
 
     class Connection:
-        def cursor(self): pytest.fail("must not inspect or commit a failed restore")
-        def commit(self): pytest.fail("must not commit")
+        def cursor(self):
+            pytest.fail("must not inspect or commit a failed restore")
+
+        def commit(self):
+            pytest.fail("must not commit")
 
     results = iter([0, 1])
 
     with pytest.raises(CBB26IntegrityError, match="pg_restore failed"):
         restore_shard(
-            _shard(), dump, _sidecar(), Connection(), cache_root=tmp_path,
-            run=lambda *_args, **_kwargs: type("R", (), {"returncode": next(results), "stderr": "bad dump"})(),
+            _shard(),
+            dump,
+            _sidecar(),
+            Connection(),
+            cache_root=tmp_path,
+            run=lambda *_args, **_kwargs: type(
+                "R", (), {"returncode": next(results), "stderr": "bad dump"}
+            )(),
             disk_usage=lambda _: (0, 0, 2**33),
         )
 
@@ -342,7 +472,14 @@ def test_remove_cache_requires_verified_partition_receipts(tmp_path: Path):
             shard,
             tmp_path,
             expected_artifacts=[artifact],
-            receipts=[{"artifact_path": str(artifact), "remote_sha256": sha256_file(artifact), "commit_sha": "a" * 40, "success": True}],
+            receipts=[
+                {
+                    "artifact_path": str(artifact),
+                    "remote_sha256": sha256_file(artifact),
+                    "commit_sha": "a" * 40,
+                    "success": True,
+                }
+            ],
             connection=None,
         )
     assert (shard_dir / "BTC-USD.dump").exists()
@@ -360,16 +497,29 @@ def test_remove_cache_verifies_inventory_and_removes_only_target_day(tmp_path: P
     artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
 
     class Cursor:
-        def __init__(self): self.executions = []
-        def execute(self, sql, params): self.executions.append((sql, params))
+        def __init__(self):
+            self.executions = []
+
+        def execute(self, sql, params):
+            self.executions.append((sql, params))
+
     class Connection:
-        def __init__(self): self._cursor = Cursor(); self.committed = False
-        def cursor(self): return self._cursor
-        def commit(self): self.committed = True
+        def __init__(self):
+            self._cursor = Cursor()
+            self.committed = False
+
+        def cursor(self):
+            return self._cursor
+
+        def commit(self):
+            self.committed = True
 
     connection = Connection()
     remove_verified_shard_cache(
-        shard, tmp_path, expected_artifacts=artifacts, receipts=receipts,
+        shard,
+        tmp_path,
+        expected_artifacts=artifacts,
+        receipts=receipts,
         connection=connection,
     )
     assert not target.exists()
@@ -379,7 +529,13 @@ def test_remove_cache_verifies_inventory_and_removes_only_target_day(tmp_path: P
     assert len(connection._cursor.executions) == 4
     start = datetime.combine(shard.trade_date, time.min, tzinfo=timezone.utc)
     end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=timezone.utc)
-    assert connection._cursor.executions[0][1] == ("BTC-USD", start, end, "BTC-USD", start)
+    assert connection._cursor.executions[0][1] == (
+        "BTC-USD",
+        start,
+        end,
+        "BTC-USD",
+        start,
+    )
     assert connection._cursor.executions[1][1] == ("BTC-USD", start, end)
     assert connection._cursor.executions[2][1] == ("BTC-USD", start, end)
     assert connection._cursor.executions[3][1] == ("BTC-USD", end, start)
@@ -400,7 +556,11 @@ def test_remove_cache_rejects_missing_hour_and_keeps_dump(tmp_path: Path):
 
     with pytest.raises(UnverifiedRemoteArtifact, match="daily normalized inventory"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts[:-1], receipts=receipts[:-1], connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts[:-1],
+            receipts=receipts[:-1],
+            connection=None,
         )
     assert dump.exists()
 
@@ -414,7 +574,11 @@ def test_remove_cache_rejects_partition_for_another_date(tmp_path: Path):
 
     with pytest.raises(UnverifiedRemoteArtifact, match="path does not match"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts,
+            receipts=receipts,
+            connection=None,
         )
 
 
@@ -423,7 +587,11 @@ def test_remove_cache_rejects_floating_upload_receipt(tmp_path: Path):
     receipts[0]["revision"] = "main"
     with pytest.raises(UnverifiedRemoteArtifact, match="commit-pinned"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts,
+            receipts=receipts,
+            connection=None,
         )
 
 
@@ -432,7 +600,11 @@ def test_remove_cache_rejects_extra_receipt(tmp_path: Path):
     receipts.append({**receipts[0], "remote_path": "raw/unexpected.parquet"})
     with pytest.raises(UnverifiedRemoteArtifact, match="receipt inventory"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts,
+            receipts=receipts,
+            connection=None,
         )
 
 
@@ -441,12 +613,18 @@ def test_remove_cache_requires_explicit_success(tmp_path: Path):
     receipts[0].pop("success")
     with pytest.raises(UnverifiedRemoteArtifact, match="unsuccessful"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts,
+            receipts=receipts,
+            connection=None,
         )
 
 
 @pytest.mark.parametrize("mutation", ["duplicate", "missing_path"])
-def test_remove_cache_rejects_duplicate_or_missing_receipt_path(tmp_path: Path, mutation: str):
+def test_remove_cache_rejects_duplicate_or_missing_receipt_path(
+    tmp_path: Path, mutation: str
+):
     artifacts, receipts = _daily_artifacts(tmp_path / "normalized")
     if mutation == "duplicate":
         receipts[-1]["remote_path"] = receipts[0]["remote_path"]
@@ -454,7 +632,11 @@ def test_remove_cache_rejects_duplicate_or_missing_receipt_path(tmp_path: Path, 
         receipts[-1].pop("remote_path")
     with pytest.raises(UnverifiedRemoteArtifact, match="receipt inventory"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts,
+            receipts=receipts,
+            connection=None,
         )
 
 
@@ -464,11 +646,17 @@ def test_remove_cache_rejects_noncanonical_source(tmp_path: Path):
     wrong_source.parent.mkdir(parents=True)
     artifacts[0].replace(wrong_source)
     artifacts[0] = wrong_source
-    receipts[0]["remote_path"] = receipts[0]["remote_path"].replace("source=cbb26", "source=other")
+    receipts[0]["remote_path"] = receipts[0]["remote_path"].replace(
+        "source=cbb26", "source=other"
+    )
 
     with pytest.raises(UnverifiedRemoteArtifact, match="source"):
         remove_verified_shard_cache(
-            _shard(), tmp_path, expected_artifacts=artifacts, receipts=receipts, connection=None,
+            _shard(),
+            tmp_path,
+            expected_artifacts=artifacts,
+            receipts=receipts,
+            connection=None,
         )
 
 
@@ -477,20 +665,46 @@ def test_load_replay_rows_uses_bounded_deterministic_queries():
     start = datetime.combine(shard.trade_date, time.min, tzinfo=UTC)
     end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=UTC)
     anchor = ("BTC-USD", start, 100, "90000", "90001", {"90000": "1"}, {"90001": "1"})
-    newer_anchor = ("BTC-USD", start, 200, "90000", "90001", {"90000": "2"}, {"90001": "1"})
-    newest_checkpoint = ("BTC-USD", start, 300, "90000", "90001", {"90000": "3"}, {"90001": "1"})
+    newer_anchor = (
+        "BTC-USD",
+        start,
+        200,
+        "90000",
+        "90001",
+        {"90000": "2"},
+        {"90001": "1"},
+    )
+    newest_checkpoint = (
+        "BTC-USD",
+        start,
+        300,
+        "90000",
+        "90001",
+        {"90000": "3"},
+        {"90001": "1"},
+    )
     delta = ("BTC-USD", start, 101, 101, "90000", "90001", [["bid", "90000", "2"]])
     metadata = ("BTC-USD", start, end, "complete", 0, {})
 
     class Cursor:
         def __init__(self):
             self.executions = []
-            self.results = iter([[anchor], [newer_anchor], [newest_checkpoint], [delta], [metadata]])
-        def execute(self, sql, params): self.executions.append((sql, params))
-        def fetchall(self): return next(self.results)
+            self.results = iter(
+                [[anchor], [newer_anchor], [newest_checkpoint], [delta], [metadata]]
+            )
+
+        def execute(self, sql, params):
+            self.executions.append((sql, params))
+
+        def fetchall(self):
+            return next(self.results)
+
     class Connection:
-        def __init__(self): self._cursor = Cursor()
-        def cursor(self): return self._cursor
+        def __init__(self):
+            self._cursor = Cursor()
+
+        def cursor(self):
+            return self._cursor
 
     connection = Connection()
     rows = load_replay_rows(connection, shard)
@@ -502,7 +716,10 @@ def test_load_replay_rows_uses_bounded_deterministic_queries():
     assert rows.metadata[0]["window_end"] == end
     assert len(connection._cursor.executions) == 5
     assert connection._cursor.executions[0][1] == ("BTC-USD", start)
-    assert "ORDER BY anchor_second DESC, source_sequence_num DESC LIMIT 1" in connection._cursor.executions[0][0]
+    assert (
+        "ORDER BY anchor_second DESC, source_sequence_num DESC LIMIT 1"
+        in connection._cursor.executions[0][0]
+    )
     assert connection._cursor.executions[1][1] == ("BTC-USD", start, end)
     assert connection._cursor.executions[2][1] == ("BTC-USD", start, end)
     assert connection._cursor.executions[3][1] == ("BTC-USD", start, end)
@@ -515,14 +732,18 @@ def test_process_replay_day_feeds_bounded_rows_to_replay_and_publish(tmp_path: P
     start = datetime.combine(shard.trade_date, time.min, tzinfo=UTC)
     end = datetime.combine(shard.trade_date, time(23, 59, 59), tzinfo=UTC)
     replay_calls, publish_calls = [], []
-    rows = type("Rows", (), {"anchors": ["anchor"], "deltas": ["delta"], "metadata": ["gap"]})()
+    rows = type(
+        "Rows", (), {"anchors": ["anchor"], "deltas": ["delta"], "metadata": ["gap"]}
+    )()
 
     def load(_connection, actual_shard):
         assert actual_shard == shard
         return rows
+
     def replay(**kwargs):
         replay_calls.append(kwargs)
         return iter(["state"])
+
     def publish(**kwargs):
         publish_calls.append(kwargs)
         return ["receipt"]
@@ -532,12 +753,22 @@ def test_process_replay_day_feeds_bounded_rows_to_replay_and_publish(tmp_path: P
     )
 
     assert result == ["receipt"]
-    assert replay_calls == [{
-        "anchors": ["anchor"], "deltas": ["delta"], "metadata": ["gap"],
-        "day_start": start, "day_end": end, "product_id": "BTC-USD",
-    }]
-    assert publish_calls == [{
-        "deltas": ["delta"], "states": ["state"], "root": tmp_path,
-        "source_revision": "c1e89eded9915e1c75a18911298edfbbbe4050ce",
-        "source_date": "2026-04-24",
-    }]
+    assert replay_calls == [
+        {
+            "anchors": ["anchor"],
+            "deltas": ["delta"],
+            "metadata": ["gap"],
+            "day_start": start,
+            "day_end": end,
+            "product_id": "BTC-USD",
+        }
+    ]
+    assert publish_calls == [
+        {
+            "deltas": ["delta"],
+            "states": ["state"],
+            "root": tmp_path,
+            "source_revision": "c1e89eded9915e1c75a18911298edfbbbe4050ce",
+            "source_date": "2026-04-24",
+        }
+    ]

@@ -145,7 +145,9 @@ def test_publish_manifest_records_optional_raw_lineage(tmp_path: Path):
         source_manifest_path="/data/raw-1.json",
         feature_set_id="core_v1",
         feature_engine_git_sha="a" * 40,
-        excluded_intervals=[{"start": "2026-04-24T01:00:00+00:00", "end": "2026-04-24T01:01:00+00:00"}],
+        excluded_intervals=[
+            {"start": "2026-04-24T01:00:00+00:00", "end": "2026-04-24T01:01:00+00:00"}
+        ],
     )
 
     payload = json.loads(manifest_path.read_text())
@@ -164,7 +166,9 @@ def test_inspection_carries_adjacent_lineage_into_default_manifest(tmp_path: Pat
         "source_manifest_path": "/data/raw.json",
         "feature_set_id": "core_v1",
         "feature_engine_git_sha": "a" * 40,
-        "excluded_intervals": [{"start": "2026-04-24T01:00:00+00:00", "end": "2026-04-24T01:01:00+00:00"}],
+        "excluded_intervals": [
+            {"start": "2026-04-24T01:00:00+00:00", "end": "2026-04-24T01:01:00+00:00"}
+        ],
     }
     feature_path.with_suffix(".parquet.lineage.json").write_text(json.dumps(lineage))
 

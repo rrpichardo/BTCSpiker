@@ -33,8 +33,13 @@ def _manifest_values():
 
 def test_manifest_id_ignores_dictionary_order():
     common = _manifest_values()
-    left = RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **common)
-    right = RawDatasetManifest(created_at=datetime(2030, 1, 1, tzinfo=timezone.utc), **dict(reversed(list(common.items()))))
+    left = RawDatasetManifest(
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **common
+    )
+    right = RawDatasetManifest(
+        created_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        **dict(reversed(list(common.items()))),
+    )
     assert raw_manifest_id(left) == raw_manifest_id(right)
 
 
@@ -42,19 +47,28 @@ def test_manifest_rejects_non_research_usage_scope():
     values = _manifest_values()
     values["usage_scope"] = "production"
     with pytest.raises(ValueError, match="research_unverified"):
-        RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
+        RawDatasetManifest(
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values
+        )
 
 
 def test_trade_completion_evidence_is_part_of_deterministic_identity():
     values = _manifest_values()
-    left = RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
+    left = RawDatasetManifest(
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values
+    )
     right = RawDatasetManifest(
-        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values,
-        trade_day_completions=[{
-            "product_id": "BTC-USD", "source_date": "2026-01-01",
-            "day_start_epoch": 1767225600, "day_end_epoch": 1767312000,
-            "trade_pages_complete": True,
-        }],
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        **values,
+        trade_day_completions=[
+            {
+                "product_id": "BTC-USD",
+                "source_date": "2026-01-01",
+                "day_start_epoch": 1767225600,
+                "day_end_epoch": 1767312000,
+                "trade_pages_complete": True,
+            }
+        ],
     )
     assert raw_manifest_id(left) != raw_manifest_id(right)
 
@@ -90,12 +104,20 @@ def test_real_trade_completion_adapter_produces_canonical_credited_evidence():
         trade_day_completions=[serialized],
         **values,
     )
-    report = audit_dataset(manifest, book_intervals=[(start, start + timedelta(days=1))])
+    report = audit_dataset(
+        manifest, book_intervals=[(start, start + timedelta(days=1))]
+    )
     assert report.per_day["2026-01-01"]["trade_pages_complete"] is True
     assert report.per_day["2026-01-01"]["valid_seconds"] == 86_400
 
-    for unadapted in (completion, {key: value for key, value in serialized.items()
-                                   if key != "trade_pages_complete"}):
+    for unadapted in (
+        completion,
+        {
+            key: value
+            for key, value in serialized.items()
+            if key != "trade_pages_complete"
+        },
+    ):
         invalid_manifest = RawDatasetManifest(
             created_at=start,
             trade_day_completions=[unadapted],
@@ -121,26 +143,35 @@ def test_same_identity_different_creation_times_publish_distinct_immutable_bytes
             self.info = Info()
             self.files = {}
             self.uploads = 0
+
         def whoami(self):
             return {"name": "alice"}
+
         def repo_info(self, **kwargs):
             return self.info
+
         def file_exists(self, *, filename, **kwargs):
             return filename in self.files
+
         def upload_file(self, *, path_or_fileobj, path_in_repo, **kwargs):
             content = path_or_fileobj.getvalue()
             self.files[path_in_repo] = content
             self.uploads += 1
             self.info.sha = f"{self.uploads:040x}"
             return type("Commit", (), {"oid": self.info.sha})()
+
         def get_paths_info(self, *, paths, **kwargs):
             digest = sha256(self.files[paths[0]]).hexdigest()
             lfs = type("Lfs", (), {"sha256": digest})()
             return [type("PathInfo", (), {"lfs": lfs})()]
 
     values = _manifest_values()
-    first = RawDatasetManifest(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values)
-    second = RawDatasetManifest(created_at=datetime(2026, 1, 2, tzinfo=timezone.utc), **values)
+    first = RawDatasetManifest(
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), **values
+    )
+    second = RawDatasetManifest(
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc), **values
+    )
     api = MemoryApi()
     store = PrivateHubStore.connect(api_factory=lambda: api)
     first_receipt = publish_raw_manifest(first, store)
@@ -167,20 +198,27 @@ def test_upload_bytes_reuses_matching_existing_content_at_pinned_commit():
         def __init__(self):
             self.info = Info()
             self.uploads = 0
+
         def whoami(self):
             return {"name": "alice"}
+
         def repo_info(self, **kwargs):
             return self.info
+
         def file_exists(self, **kwargs):
             return True
+
         def upload_file(self, **kwargs):
             self.uploads += 1
+
         def get_paths_info(self, **kwargs):
             lfs = type("Lfs", (), {"sha256": sha256(content).hexdigest()})()
             return [type("PathInfo", (), {"lfs": lfs})()]
 
     api = ExistingApi()
-    receipt = PrivateHubStore.connect(api_factory=lambda: api).upload_bytes(remote_path, content)
+    receipt = PrivateHubStore.connect(api_factory=lambda: api).upload_bytes(
+        remote_path, content
+    )
     assert receipt.revision == "b" * 40
     assert receipt.sha256 == sha256(content).hexdigest()
     assert api.uploads == 0
@@ -200,14 +238,19 @@ def test_upload_bytes_never_overwrites_existing_different_content():
         def __init__(self):
             self.info = Info()
             self.uploads = 0
+
         def whoami(self):
             return {"name": "alice"}
+
         def repo_info(self, **kwargs):
             return self.info
+
         def file_exists(self, **kwargs):
             return True
+
         def upload_file(self, **kwargs):
             self.uploads += 1
+
         def get_paths_info(self, **kwargs):
             lfs = type("Lfs", (), {"sha256": sha256(existing_content).hexdigest()})()
             return [type("PathInfo", (), {"lfs": lfs})()]

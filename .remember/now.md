@@ -1,7 +1,5 @@
 
-## 15:13 | main
-Added market_price field through bridge→materializer, built /timeline endpoint w/ 6-state outcome classification, replaced ScoreChart w/ TimelineCharts dual-chart + range-selector (1m–24h), fixture & live verified.
-## 15:19 | main
-Codex review found 2 P2 bugs (resolution bounds validation, horizon-boundary classification); verified findings; fixing timeline.py/materializer.py.
-## 15:43 | main
-Fixed both P2 bugs: materializer.py (resolution bounds validation), timeline.py (horizon-boundary classification); added regression tests; all 403 tests pass.
+## 00:54 | claude/run-server-bbe51f
+Investigated pending work, identified unmerged perf-fix branch (`claude/bug-investigation-79e34e`: DB index + deadline guardrail on `/predictions`) and materializer health-check blind spot (false-ok on Kafka stall), began fixes.
+## 01:15 | main
+Investigated PR #1 & claude/web-ui deletion; confirmed code in main via integration/web-ui-plus-ml, branch restored.

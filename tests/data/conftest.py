@@ -31,7 +31,9 @@ def replay_delta_rows() -> list[dict[str, object]]:
             "source_sequence_num_end": 100 + offset,
             "best_bid": Decimal("90000.00"),
             "best_ask": Decimal("90000.10"),
-            "changes": (("bid", Decimal("90000.00"), Decimal(str(1.25 + offset / 10))),),
+            "changes": (
+                ("bid", Decimal("90000.00"), Decimal(str(1.25 + offset / 10))),
+            ),
         }
         for offset in (1, 2, 3)
     ]

@@ -64,8 +64,23 @@ class ManualClock:
 def fake_trade_session():
     return TradeSession(
         [
-            Response(200, {"trades": [trade("100", DAY_END - 1), trade("99", DAY_START + 20)], "best_bid": "1"}),
-            Response(200, {"trades": [trade("99", DAY_START + 20), trade("98", DAY_START + 10), trade("97", DAY_START)]}),
+            Response(
+                200,
+                {
+                    "trades": [trade("100", DAY_END - 1), trade("99", DAY_START + 20)],
+                    "best_bid": "1",
+                },
+            ),
+            Response(
+                200,
+                {
+                    "trades": [
+                        trade("99", DAY_START + 20),
+                        trade("98", DAY_START + 10),
+                        trade("97", DAY_START),
+                    ]
+                },
+            ),
         ]
     )
 
@@ -87,7 +102,11 @@ def client(session):
 def test_backfill_deduplicates_inclusive_end_overlap(fake_trade_session):
     trades = list(client(fake_trade_session).iter_day_trades(DAY))
     assert [trade.trade_id for trade in trades] == ["97", "98", "99", "100"]
-    assert fake_trade_session.calls[0][1] == {"limit": 1000, "start": DAY_START, "end": DAY_END}
+    assert fake_trade_session.calls[0][1] == {
+        "limit": 1000,
+        "start": DAY_START,
+        "end": DAY_END,
+    }
     assert fake_trade_session.calls[1][1]["end"] == DAY_START + 20
 
 
@@ -111,7 +130,9 @@ def test_empty_pages_require_two_consecutive_pages_before_stall():
     assert len(session.calls) == 2
 
 
-def test_completion_evidence_exists_only_after_success(fake_trade_session, stalled_trade_session):
+def test_completion_evidence_exists_only_after_success(
+    fake_trade_session, stalled_trade_session
+):
     successful = client(fake_trade_session)
     list(successful.iter_day_trades(DAY))
     assert successful.last_completion == TradeDayCompletion(
@@ -132,7 +153,9 @@ def test_response_bbo_is_not_copied_into_trade_events(fake_trade_session):
     assert not hasattr(event, "best_bid")
 
 
-def test_backfill_preserves_reported_side_and_uses_public_request_shape(fake_trade_session):
+def test_backfill_preserves_reported_side_and_uses_public_request_shape(
+    fake_trade_session,
+):
     event = next(client(fake_trade_session).iter_day_trades(DAY))
     _, _, headers, timeout = fake_trade_session.calls[0]
     assert event.reported_side == "SELL"
@@ -149,7 +172,9 @@ def test_retries_retryable_status_with_retry_after_before_success():
         ]
     )
     sleeps = []
-    trades = list(CoinbaseTradeClient(session=session, sleep=sleeps.append).iter_day_trades(DAY))
+    trades = list(
+        CoinbaseTradeClient(session=session, sleep=sleeps.append).iter_day_trades(DAY)
+    )
     assert [item.trade_id for item in trades] == ["1"]
     assert sleeps == [2.0]
 
@@ -182,15 +207,19 @@ def test_nonretryable_4xx_fails_immediately():
 
 
 def test_module_iterator_delegates_to_the_public_client(fake_trade_session):
-    trades = list(iter_day_trades(DAY, session=fake_trade_session, sleep=lambda _: None))
+    trades = list(
+        iter_day_trades(DAY, session=fake_trade_session, sleep=lambda _: None)
+    )
     assert [trade.trade_id for trade in trades] == ["97", "98", "99", "100"]
 
 
 def test_ninth_immediate_request_waits_for_token_refill():
     page_seconds = [DAY_END - index * 100 for index in range(1, 9)] + [DAY_START]
     session = TradeSession(
-        [Response(200, {"trades": [trade(str(index), second)]})
-         for index, second in enumerate(page_seconds)]
+        [
+            Response(200, {"trades": [trade(str(index), second)]})
+            for index, second in enumerate(page_seconds)
+        ]
     )
     clock = ManualClock()
     trade_client = CoinbaseTradeClient(
@@ -208,34 +237,36 @@ def test_ninth_immediate_request_waits_for_token_refill():
 def test_configured_rate_limit_controls_token_bucket():
     page_seconds = [DAY_END - index * 100 for index in range(1, 5)] + [DAY_START]
     session = TradeSession(
-        [Response(200, {"trades": [trade(str(index), second)]})
-         for index, second in enumerate(page_seconds)]
+        [
+            Response(200, {"trades": [trade(str(index), second)]})
+            for index, second in enumerate(page_seconds)
+        ]
     )
     clock = ManualClock()
 
-    list(CoinbaseTradeClient(
-        session=session,
-        max_rps=4,
-        sleep=clock.sleep,
-        monotonic=clock.monotonic,
-    ).iter_day_trades(DAY))
+    list(
+        CoinbaseTradeClient(
+            session=session,
+            max_rps=4,
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+        ).iter_day_trades(DAY)
+    )
 
     assert clock.sleeps == [0.25]
 
 
 def test_configured_product_controls_request_endpoint():
-    session = TradeSession(
-        [Response(200, {"trades": [trade("eth-1", DAY_START)]})]
+    session = TradeSession([Response(200, {"trades": [trade("eth-1", DAY_START)]})])
+    list(
+        CoinbaseTradeClient(session=session, product_id="ETH-USD").iter_day_trades(DAY)
     )
-    list(CoinbaseTradeClient(session=session, product_id="ETH-USD").iter_day_trades(DAY))
     assert session.calls[0][0].endswith("/products/ETH-USD/ticker")
 
 
 def test_short_page_inside_day_start_epoch_second_completes_day():
     first_second = DAY_START + 0.5
-    session = TradeSession(
-        [Response(200, {"trades": [trade("first", first_second)]})]
-    )
+    session = TradeSession([Response(200, {"trades": [trade("first", first_second)]})])
     trade_client = client(session)
 
     trades = list(trade_client.iter_day_trades(DAY))
@@ -246,8 +277,7 @@ def test_short_page_inside_day_start_epoch_second_completes_day():
 
 def test_full_page_inside_day_start_epoch_second_cannot_certify_completion():
     full_page = [
-        trade(str(index), DAY_START + (1000 - index) / 2000)
-        for index in range(1000)
+        trade(str(index), DAY_START + (1000 - index) / 2000) for index in range(1000)
     ]
     session = TradeSession(
         [

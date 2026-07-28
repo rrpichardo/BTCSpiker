@@ -1,4 +1,3 @@
-from dataclasses import replace
 from datetime import date
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -134,7 +133,9 @@ def test_materialize_rejects_manifest_partition_checksum_mismatch(tmp_path):
     partition = tmp_path / "trades.parquet"
     partition.write_bytes(b"not-the-declared-content")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps(_raw_manifest([_manifest_partition("trades", partition, "0" * 64)])))
+    manifest.write_text(
+        json.dumps(_raw_manifest([_manifest_partition("trades", partition, "0" * 64)]))
+    )
 
     with pytest.raises(ValueError, match="checksum"):
         materialize_coinbase_history.load_verified_manifest(manifest)
@@ -153,7 +154,6 @@ def test_manifest_rejects_receipt_that_does_not_match_partition(tmp_path):
 
 
 def test_remote_manifest_verifies_every_kind_at_exact_revision(tmp_path):
-    paths = []
     partitions = []
     for kind in ("book_deltas", "book_states", "trades"):
         local = tmp_path / f"{kind}.parquet"
@@ -174,9 +174,17 @@ def test_remote_manifest_verifies_every_kind_at_exact_revision(tmp_path):
                     (),
                     {
                         "path": remote_path,
-                        "lfs": type("Lfs", (), {"sha256": next(
-                            item["sha256"] for item in partitions if item["remote_path"] == remote_path
-                        )})(),
+                        "lfs": type(
+                            "Lfs",
+                            (),
+                            {
+                                "sha256": next(
+                                    item["sha256"]
+                                    for item in partitions
+                                    if item["remote_path"] == remote_path
+                                )
+                            },
+                        )(),
                     },
                 )()
                 for remote_path in paths_seen
@@ -187,7 +195,11 @@ def test_remote_manifest_verifies_every_kind_at_exact_revision(tmp_path):
     manifest.write_text(json.dumps(_raw_manifest(partitions)))
     payload = materialize_coinbase_history.load_verified_manifest(manifest, api=api)
 
-    assert {item["kind"] for item in payload["partitions"]} == {"book_deltas", "book_states", "trades"}
+    assert {item["kind"] for item in payload["partitions"]} == {
+        "book_deltas",
+        "book_states",
+        "trades",
+    }
 
 
 def test_materialize_cli_prints_existing_dataset_export(tmp_path, capsys):
@@ -214,7 +226,9 @@ def test_materialize_cli_prints_existing_dataset_export(tmp_path, capsys):
         verifier=lambda path: {"partitions": []},
     )
     assert code == 0
-    assert f"export BTCSPIKER_EXISTING_DATA={output.resolve()}" in capsys.readouterr().out
+    assert (
+        f"export BTCSPIKER_EXISTING_DATA={output.resolve()}" in capsys.readouterr().out
+    )
 
 
 def test_materialize_cli_verifies_manifest_before_custom_runner(tmp_path):
@@ -260,7 +274,9 @@ def test_trade_writer_emits_all_24_hours_including_empty_hours(tmp_path):
 
     assert len(records) == 24
     assert all(record.row_count == 0 for record in records)
-    assert {record.path.parent.name for record in records} == {f"hour={hour:02d}" for hour in range(24)}
+    assert {record.path.parent.name for record in records} == {
+        f"hour={hour:02d}" for hour in range(24)
+    }
 
 
 def test_materialize_history_verifies_raw_files_and_writes_lineage(tmp_path):

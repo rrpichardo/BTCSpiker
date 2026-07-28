@@ -44,7 +44,10 @@ def test_trade_uses_last_fully_observed_book_second():
 
     joined = join_trades_to_books(
         [_trade(DAY_START + timedelta(seconds=2), "100")],
-        [_book(DAY_START + timedelta(seconds=1)), _book(DAY_START + timedelta(seconds=2))],
+        [
+            _book(DAY_START + timedelta(seconds=1)),
+            _book(DAY_START + timedelta(seconds=2)),
+        ],
     )
 
     row = joined.loc[joined["trade_id"] == "100"].iloc[0]
@@ -55,13 +58,17 @@ def test_trade_uses_last_fully_observed_book_second():
 def test_join_excludes_unsafe_trades_and_rejects_duplicate_ids():
     from tests.data.conftest import DAY_START
 
-    assert join_trades_to_books(
-        [_trade(DAY_START, "early")], [_book(DAY_START)]
-    ).empty
+    assert join_trades_to_books([_trade(DAY_START, "early")], [_book(DAY_START)]).empty
     with pytest.raises(ValueError, match="duplicate trade_id"):
         join_trades_to_books(
-            [_trade(DAY_START + timedelta(seconds=2), "100"), _trade(DAY_START + timedelta(seconds=3), "100")],
-            [_book(DAY_START + timedelta(seconds=1)), _book(DAY_START + timedelta(seconds=2))],
+            [
+                _trade(DAY_START + timedelta(seconds=2), "100"),
+                _trade(DAY_START + timedelta(seconds=3), "100"),
+            ],
+            [
+                _book(DAY_START + timedelta(seconds=1)),
+                _book(DAY_START + timedelta(seconds=2)),
+            ],
         )
 
 
@@ -79,6 +86,7 @@ def test_join_never_crosses_segments_and_returns_tick_contract():
 
 def test_join_infers_segment_only_from_exact_prior_book_second():
     from tests.data.conftest import DAY_START
+
     gap_trade = _trade(DAY_START + timedelta(seconds=50), "gap")
     after_gap_trade = _trade(DAY_START + timedelta(seconds=101), "after-gap")
     gap_trade.pop("segment_id")
@@ -106,7 +114,9 @@ def test_materializes_each_feature_set_without_crossing_segment_boundaries():
             observed = DAY_START + timedelta(seconds=offset + second)
             books.append(_book(observed, segment_id=segment_id))
             if second:
-                trades.append(_trade(observed, f"{segment_id}-{second}", segment_id=segment_id))
+                trades.append(
+                    _trade(observed, f"{segment_id}-{second}", segment_id=segment_id)
+                )
 
     outputs = materialize_segmented_features(trades, books)
 
@@ -146,7 +156,13 @@ def test_materializes_products_independently_when_segment_ids_match():
 def test_writes_all_feature_sets_by_content_hash_and_reuses_identical_files(tmp_path):
     outputs = {
         feature_set_id: pd.DataFrame(
-            [{"product_id": "BTC-USD", "timestamp": "2026-04-24T00:00:00.500000+00:00", "value": index}]
+            [
+                {
+                    "product_id": "BTC-USD",
+                    "timestamp": "2026-04-24T00:00:00.500000+00:00",
+                    "value": index,
+                }
+            ]
         )
         for index, feature_set_id in enumerate(
             ("core_v1", "multi_window_v1", "microstructure_v1")

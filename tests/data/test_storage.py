@@ -65,7 +65,9 @@ def test_book_states_allow_repeated_sequence_range_at_distinct_timestamps(tmp_pa
     assert record.row_count == 2
 
 
-def test_book_deltas_reject_duplicate_observed_through_even_with_distinct_sequences(tmp_path):
+def test_book_deltas_reject_duplicate_observed_through_even_with_distinct_sequences(
+    tmp_path,
+):
     timestamp = datetime(2026, 4, 24, 3, tzinfo=timezone.utc)
     table = _book_table([timestamp, timestamp], [42, 43], [42, 43])
     with pytest.raises(ValueError, match="duplicate stable keys"):
