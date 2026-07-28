@@ -802,8 +802,7 @@ def test_health_snapshot_ok_false_when_last_event_ts_is_stale(tmp_path):
     db_path = tmp_path / "test.db"
     materializer.init_db(db_path)
     stale_ts = (
-        datetime.now(timezone.utc)
-        - timedelta(seconds=materializer.STALE_SECONDS + 1)
+        datetime.now(timezone.utc) - timedelta(seconds=materializer.STALE_SECONDS + 1)
     ).isoformat()
     state = materializer.ConsumerState(
         last_event_ts=stale_ts, alive=True, outcomes_alive=True, broker_ok=True
@@ -1185,7 +1184,9 @@ def test_readonly_connection_interrupts_query_past_deadline(tmp_path):
         ro.execute(SLOW_SQL).fetchall()
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 2.0, f"took {elapsed}s -- deadline should interrupt almost immediately"
+    assert (
+        elapsed < 2.0
+    ), f"took {elapsed}s -- deadline should interrupt almost immediately"
     assert excinfo.value.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT
 
     # The connection itself isn't wedged by the interrupt -- it still closes
@@ -1235,7 +1236,9 @@ def test_health_short_deadline_reports_db_not_ok_instead_of_outrunning_docker_pr
     elapsed = time.monotonic() - t0
 
     assert (count, ok) == (0, False)
-    assert elapsed < 2.0, f"took {elapsed}s -- should report not-ok well under Docker's 5s probe"
+    assert (
+        elapsed < 2.0
+    ), f"took {elapsed}s -- should report not-ok well under Docker's 5s probe"
 
 
 def test_slow_performance_query_returns_503_instead_of_hanging(tmp_path, monkeypatch):
@@ -1298,7 +1301,9 @@ def test_repeated_slow_requests_do_not_exhaust_workers_then_normal_request_succe
         t.join(timeout=5.0)
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 5.0, f"took {elapsed}s -- concurrent slow requests should all resolve promptly"
+    assert (
+        elapsed < 5.0
+    ), f"took {elapsed}s -- concurrent slow requests should all resolve promptly"
     assert len(results) == len(windows)
     assert all(r.status_code == 503 for r in results)
 
@@ -1313,7 +1318,9 @@ def test_repeated_slow_requests_do_not_exhaust_workers_then_normal_request_succe
     response = client.get("/predictions/performance?window_minutes=30")
     elapsed = time.monotonic() - t0
     assert response.status_code == 200
-    assert elapsed < 2.0, f"recovery request took {elapsed}s -- workers should not be exhausted"
+    assert (
+        elapsed < 2.0
+    ), f"recovery request took {elapsed}s -- workers should not be exhausted"
 
 
 def test_concurrent_cache_misses_for_same_window_run_one_computation(
@@ -1374,9 +1381,7 @@ def test_concurrent_cache_misses_for_same_window_run_one_computation(
     other_result = []
 
     def fire_other():
-        other_result.append(
-            client.get("/predictions/performance?window_minutes=60")
-        )
+        other_result.append(client.get("/predictions/performance?window_minutes=60"))
 
     other_thread = threading.Thread(target=fire_other)
     other_thread.start()
@@ -1429,7 +1434,9 @@ def test_index_migration_on_populated_db_waits_out_write_lock(tmp_path, monkeypa
     elapsed = time.monotonic() - t0
     releaser.join()
 
-    assert elapsed < 2.0, f"init_db took {elapsed}s -- should wait out the ~0.3s lock, not the full timeout"
+    assert (
+        elapsed < 2.0
+    ), f"init_db took {elapsed}s -- should wait out the ~0.3s lock, not the full timeout"
     plan = conn.execute(
         "EXPLAIN QUERY PLAN SELECT 1 FROM predictions WHERE feature_id = ?", ("x",)
     ).fetchall()
@@ -1468,7 +1475,9 @@ def test_index_migration_raises_cleanly_and_closes_connection_when_lock_outlives
     with pytest.raises(sqlite3.OperationalError):
         materializer.init_db(db_path)
     elapsed = time.monotonic() - t0
-    assert elapsed < 1.0, f"init_db took {elapsed}s -- should fail fast on lock timeout, not hang"
+    assert (
+        elapsed < 1.0
+    ), f"init_db took {elapsed}s -- should fail fast on lock timeout, not hang"
 
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError):

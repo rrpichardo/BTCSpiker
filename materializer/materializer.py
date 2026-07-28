@@ -563,9 +563,7 @@ def _open_readonly(
     # Caveat: SQLite's busy-wait sleep (above) doesn't tick this handler, so
     # worst-case connection lifetime is (deadline_seconds + busy_timeout_ms).
     deadline = time.monotonic() + deadline_seconds
-    conn.set_progress_handler(
-        lambda: time.monotonic() > deadline, PROGRESS_HANDLER_OPS
-    )
+    conn.set_progress_handler(lambda: time.monotonic() > deadline, PROGRESS_HANDLER_OPS)
     return conn
 
 
@@ -1582,7 +1580,9 @@ def _log_read_timeout_throttled(
         _read_timeout_count += 1
         count = _read_timeout_count
         now = time.monotonic()
-        should_log = (now - _read_timeout_last_log_monotonic) >= _READ_TIMEOUT_LOG_INTERVAL_SEC
+        should_log = (
+            now - _read_timeout_last_log_monotonic
+        ) >= _READ_TIMEOUT_LOG_INTERVAL_SEC
         if should_log:
             _read_timeout_last_log_monotonic = now
     if should_log:
@@ -1656,9 +1656,7 @@ def get_performance(window_minutes: int = 30):
                 cached = _perf_cache.get(window_minutes)
             if cached is not None:
                 return cached[1]
-        raise HTTPException(
-            status_code=503, detail="predictions database unavailable"
-        )
+        raise HTTPException(status_code=503, detail="predictions database unavailable")
 
     try:
         payload = _build_performance_payload(window_minutes)
