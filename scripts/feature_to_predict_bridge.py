@@ -41,11 +41,11 @@ API_TIMEOUT = float(os.getenv("PREDICT_API_TIMEOUT", "10"))
 STARTUP_TIMEOUT = float(os.getenv("STARTUP_TIMEOUT", "30"))
 RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "2"))
 
-# feature_id/stream_epoch are read separately (see feature_message.get(...)
-# below) to stamp provenance on outgoing predictions; forwarding them into
-# the /predict row would make the API 422 on every request, since it treats
-# any key outside {"ts", "feature_set_id", "feature_schema_version"} as a
-# numeric model feature.
+# feature_id/stream_epoch/stream_id/ingest_mode are read separately (see
+# feature_message.get(...) below) to stamp provenance on outgoing
+# predictions; forwarding them into the /predict row would make the API 422
+# on every request, since it treats any key outside {"ts", "feature_set_id",
+# "feature_schema_version"} as a numeric model feature.
 NON_MODEL_FIELDS = {
     "product_id",
     "timestamp",
@@ -53,6 +53,8 @@ NON_MODEL_FIELDS = {
     "vol_spike",
     "feature_id",
     "stream_epoch",
+    "stream_id",
+    "ingest_mode",
 }
 
 
@@ -168,18 +170,22 @@ def _build_prediction_event(
     feature_ts: str | None,
     feature_id: str | None,
     stream_epoch: int | None,
+    stream_id: str | None,
+    ingest_mode: str | None,
+    product_id: str | None,
 ) -> dict:
     """Assemble the PredictionEvent for the consumed features message.
 
     event_id is derived from the consumed message's own topic/partition/offset
     so retries of the same message produce the same id (downstream dedup key).
 
-    feature_id/stream_epoch come from the raw consumed feature message (old-
-    format backlog messages lack them, so they fall back to null rather than
-    crashing). tau/run_id come from the /predict response payload.
-    market_price is the last-trade price captured alongside this feature row
-    (row["price"]); it's market context for the timeline view, not a model
-    feature, and old messages that predate it fall back to null.
+    feature_id/stream_epoch/stream_id/ingest_mode/product_id come from the
+    raw consumed feature message (old-format backlog messages lack them, so
+    they fall back to null rather than crashing). tau/run_id come from the
+    /predict response payload. market_price is the last-trade price captured
+    alongside this feature row (row["price"]); it's market context for the
+    timeline view, not a model feature, and old messages that predate it
+    fall back to null.
     """
     return {
         "event_id": f"{msg.topic()}:{msg.partition()}:{msg.offset()}",
@@ -188,6 +194,9 @@ def _build_prediction_event(
         "feature_ts": feature_ts,
         "feature_id": feature_id,
         "stream_epoch": stream_epoch,
+        "stream_id": stream_id,
+        "ingest_mode": ingest_mode,
+        "product_id": product_id,
         "api_ts": response_payload.get("ts"),
         "score": response_payload["scores"][0],
         "model_variant": response_payload.get("model_variant"),
@@ -308,6 +317,9 @@ def main() -> None:
                 feature_ts=feature_message.get("timestamp"),
                 feature_id=feature_message.get("feature_id"),
                 stream_epoch=feature_message.get("stream_epoch"),
+                stream_id=feature_message.get("stream_id"),
+                ingest_mode=feature_message.get("ingest_mode"),
+                product_id=feature_message.get("product_id"),
             )
             while not stop and not _publish_prediction(producer, event):
                 log.warning(

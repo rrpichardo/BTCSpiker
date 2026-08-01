@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import api
 import pytest
+from fastapi import HTTPException
 
 from api import settings_view
 
@@ -159,6 +160,41 @@ def test_missing_files_return_nulls_and_unknown(tmp_path, monkeypatch):
         assert by_key[key]["saved_value"] is None
         assert by_key[key]["active_value"] is None
         assert by_key[key]["apply_state"] == "unknown"
+
+
+def test_env_path_resolving_to_a_directory_raises_500_not_reported_as_missing(
+    tmp_path, monkeypatch
+):
+    # The exact trap: a Docker bind mount for a missing host .env resolves
+    # to an empty directory rather than failing the mount, so path.exists()
+    # is True but reading it as a file raises IsADirectoryError. This must
+    # surface as a distinct, structured 500 -- not the same "file missing"
+    # behavior tested above (which returns 200 with nulls).
+    env_dir = tmp_path / ".env"
+    env_dir.mkdir()
+    monkeypatch.setenv("SETTINGS_ENV_FILE", str(env_dir))
+    monkeypatch.setenv("SETTINGS_CONFIG_FILE", str(tmp_path / "nope.yaml"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_view.get_settings()
+
+    assert exc_info.value.status_code == 500
+    assert str(env_dir) in exc_info.value.detail
+
+
+def test_config_path_resolving_to_a_directory_raises_500_not_reported_as_missing(
+    tmp_path, monkeypatch
+):
+    config_dir = tmp_path / "config.yaml"
+    config_dir.mkdir()
+    monkeypatch.setenv("SETTINGS_ENV_FILE", str(tmp_path / "nope.env"))
+    monkeypatch.setenv("SETTINGS_CONFIG_FILE", str(config_dir))
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_view.get_settings()
+
+    assert exc_info.value.status_code == 500
+    assert str(config_dir) in exc_info.value.detail
 
 
 def test_quoted_env_values_are_unquoted(tmp_path, monkeypatch):

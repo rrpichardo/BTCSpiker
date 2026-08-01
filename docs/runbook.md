@@ -312,9 +312,17 @@ a corpus you're relying on for ML tournament work.
 
 **Regenerate drift report:**
 
+`--reference` must be the real training corpus (or a held-out split of it) —
+never `handoff/data_sample/features_slice.*`. That file is a 10-minute
+schema/smoke fixture, not a distribution proxy (see its `manifest.json`);
+`drift_report.py` refuses it outright. The full training reference isn't
+committed to this repo (see "Training Reference Dataset" in
+`docs/drift_summary.md`) — point `--reference` at wherever your training run
+wrote its features parquet.
+
 ```bash
 python scripts/drift_report.py \
-    --reference handoff/data_sample/features_slice.csv \
+    --reference /path/to/training/features.parquet \
     --current   data/processed/features.parquet \
     --out       reports/drift_$(date +%Y%m%d).html
 ```

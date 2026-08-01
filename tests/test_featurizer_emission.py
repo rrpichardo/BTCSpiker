@@ -246,3 +246,119 @@ def test_restarted_process_gets_distinct_feature_ids_from_prior_run():
     # Same epoch/seq numbering per run (0:0) — boot_id is what disambiguates.
     assert run1_row["feature_id"] == "BTC-USD:run1:0:0"
     assert run2_row["feature_id"] == "BTC-USD:run2:0:0"
+
+
+# ---------------------------------------------------------------------------
+# 7. Redelivery guard: exact-duplicate ticks are dropped, not double-counted
+# ---------------------------------------------------------------------------
+
+
+def test_exact_duplicate_tick_is_dropped_and_does_not_advance_seq():
+    stream = _new_stream()
+    first_row, drained = stream.ingest(_tick("BTC-USD", 0.0, 100.0))
+    assert first_row is not None
+    assert drained == []
+
+    # Exact redelivery of the same tick.
+    dup_row, dup_drained = stream.ingest(_tick("BTC-USD", 0.0, 100.0))
+    assert dup_row is None
+    assert dup_drained == []
+    assert stream.duplicates_dropped == 1
+    assert stream.seq == 1  # unchanged by the dropped tick
+
+    third_row, _ = stream.ingest(_tick("BTC-USD", 0.5, 100.5))
+    assert third_row["feature_id"] == "BTC-USD:boot1:0:1"  # not :2
+    assert third_row["n_ticks_60s"] == 2  # not 3 — the duplicate never entered the buffer
+
+
+def test_non_adjacent_redelivery_within_window_is_dropped():
+    stream = _new_stream()
+    # All four ticks share one wire timestamp (a burst of same-instant
+    # updates, as real exchange feeds send) so none of these calls trigger
+    # the timestamp-regression epoch bump — isolating the redelivery guard.
+    tick_a = _tick("BTC-USD", 0.0, 100.0)
+    stream.ingest(tick_a)
+    stream.ingest(_tick("BTC-USD", 0.0, 101.0))
+    stream.ingest(_tick("BTC-USD", 0.0, 102.0))
+
+    # tick_a's exact payload reappears several ticks later, not immediately
+    # after itself — a reconnect redelivery, not an adjacent repeat.
+    redelivered_row, redelivered_drained = stream.ingest(tick_a)
+    assert redelivered_row is None
+    assert redelivered_drained == []
+    assert stream.duplicates_dropped == 1
+
+
+def test_same_timestamp_with_different_price_is_not_dropped():
+    stream = _new_stream()
+    first_row, _ = stream.ingest(_tick("BTC-USD", 0.0, 100.0))
+    # Same offset (so same wire timestamp), genuinely different price — a
+    # real event, not a redelivery of the first.
+    second_row, _ = stream.ingest(_tick("BTC-USD", 0.0, 100.5))
+
+    assert first_row is not None
+    assert second_row is not None
+    assert stream.duplicates_dropped == 0
+
+
+def test_epoch_bump_clears_the_dedupe_window():
+    stream = _new_stream()
+    tick_a = _tick("BTC-USD", 5.0, 100.0)
+    stream.ingest(tick_a)
+
+    # Timestamp regression bumps the epoch and must clear the dedupe window
+    # — a looping replay's next pass legitimately re-emits every tick from
+    # the start, and that must not be swallowed as "redelivery".
+    stream.ingest(_tick("BTC-USD", 1.0, 90.0))
+    assert stream.epoch == 1
+
+    replayed_row, _ = stream.ingest(tick_a)
+    assert replayed_row is not None
+    assert stream.duplicates_dropped == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. Lineage on the wire: stream_id / ingest_mode carried through, not
+#    inferred downstream from string-parsing or timing
+# ---------------------------------------------------------------------------
+
+
+def test_feature_row_and_outcome_carry_stream_id_and_ingest_mode():
+    stream = _new_stream()
+    tick = _tick("BTC-USD", 0.0, 100.0)
+    tick["ingest_mode"] = "replay"
+
+    feature_row, _ = stream.ingest(tick)
+    assert feature_row["stream_id"] == "boot1:0"
+    assert feature_row["ingest_mode"] == "replay"
+
+    t = 0.5
+    drained = []
+    while not drained and t < HORIZON_SEC + 2:
+        _, drained = stream.ingest(_tick("BTC-USD", t, 100.0 + t))
+        t += 0.5
+
+    assert drained, "expected at least one drained row in this window"
+    _labelled_row, outcome_event = drained[0]
+    assert outcome_event["stream_id"] == "boot1:0"
+
+
+def test_stream_id_changes_with_epoch_but_not_boot_id():
+    stream = _new_stream(boot_id="boot1")
+    first_row, _ = stream.ingest(_tick("BTC-USD", 5.0, 100.0))
+    assert first_row["stream_id"] == "boot1:0"
+
+    # Timestamp regression bumps epoch.
+    regressed_row, _ = stream.ingest(_tick("BTC-USD", 1.0, 90.0))
+    assert regressed_row["stream_id"] == "boot1:1"
+
+
+def test_ingest_mode_missing_on_tick_is_carried_as_none():
+    # Old-format ticks (pre-A4) or a producer that hasn't been upgraded yet
+    # must not crash the featurizer — ingest_mode simply comes through null.
+    stream = _new_stream()
+    tick = _tick("BTC-USD", 0.0, 100.0)
+    assert "ingest_mode" not in tick
+
+    feature_row, _ = stream.ingest(tick)
+    assert feature_row["ingest_mode"] is None

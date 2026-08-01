@@ -348,5 +348,106 @@ def test_sample_json_payload(base_url):
     assert 0 <= data["scores"][0] <= 1
 
 
+# ---------------------------------------------------------------------------
+# Train/serve skew telemetry (feature_zscore_abs / feature_skew_rows_total)
+# ---------------------------------------------------------------------------
+
+_SKEW_METRIC_PATTERN = (
+    r'^{metric}\{{(?=[^}}]*feature="{feature}")(?=[^}}]*model_version=)[^}}]*\}} ([0-9.eE+\-]+)$'
+)
+
+
+def _metric_value(text: str, metric: str, feature: str) -> float:
+    import re
+
+    pattern = re.compile(
+        _SKEW_METRIC_PATTERN.format(metric=re.escape(metric), feature=re.escape(feature)),
+        re.MULTILINE,
+    )
+    match = pattern.search(text)
+    return float(match.group(1)) if match else 0.0
+
+
+def test_predict_exports_feature_zscore_for_skewed_row(base_url):
+    # The exact defect observed in the 2026-04 duplicated-tick incident:
+    # trade_intensity_60s and n_ticks_60s both ~6 sigma off the training
+    # scaler's mean, for an entire run, with nothing surfacing it.
+    skewed_row = {**SAMPLE_ROW, "trade_intensity_60s": 12.0, "n_ticks_60s": 720}
+
+    before = requests.get(f"{base_url}/metrics", timeout=5).text
+    count_before = _metric_value(before, "feature_zscore_abs_count", "trade_intensity_60s")
+    skew_before = _metric_value(before, "feature_skew_rows_total", "trade_intensity_60s")
+
+    r = requests.post(f"{base_url}/predict", json={"rows": [skewed_row]}, timeout=5)
+    assert r.status_code == 200
+
+    after = requests.get(f"{base_url}/metrics", timeout=5).text
+    count_after = _metric_value(after, "feature_zscore_abs_count", "trade_intensity_60s")
+    skew_after = _metric_value(after, "feature_skew_rows_total", "trade_intensity_60s")
+
+    assert count_after == count_before + 1
+    assert skew_after >= skew_before + 1
+
+
+def test_normal_row_does_not_trip_skew_counter(base_url):
+    # Near the real scaler's training mean for both features (see
+    # handoff/models/artifacts/lr_pipeline.pkl: trade_intensity_60s
+    # mean=3.842, n_ticks_60s mean=230.5) -- must NOT cross |z| >= 4.
+    normal_row = {**SAMPLE_ROW, "trade_intensity_60s": 3.8, "n_ticks_60s": 230}
+
+    before = requests.get(f"{base_url}/metrics", timeout=5).text
+    skew_before = _metric_value(before, "feature_skew_rows_total", "trade_intensity_60s")
+
+    r = requests.post(f"{base_url}/predict", json={"rows": [normal_row]}, timeout=5)
+    assert r.status_code == 200
+
+    after = requests.get(f"{base_url}/metrics", timeout=5).text
+    skew_after = _metric_value(after, "feature_skew_rows_total", "trade_intensity_60s")
+
+    assert skew_after == skew_before
+
+
+def test_scaler_extraction_degrades_to_none_instead_of_raising():
+    # _extract_scaler touches only its own arguments (no module globals), so
+    # it's tested via a fresh subprocess import rather than importing
+    # api.main in-process -- this test suite never does that (see
+    # tests/test_system.py's docstring), since api/main.py's top-level model
+    # load has real side effects (an MLflow connection attempt, a pickle
+    # read) that must stay isolated per test process.
+    script = """
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+from api.main import _extract_scaler
+
+no_scaler = Pipeline([("clf", LogisticRegression())])
+assert _extract_scaler(no_scaler, ["a", "b"]) is None, "expected None for a pipeline with no scaler step"
+
+scaler = StandardScaler()
+scaler.mean_ = np.array([1.0, 2.0, 3.0])
+scaler.scale_ = np.array([1.0, 1.0, 1.0])
+mismatched = Pipeline([("scaler", scaler), ("clf", LogisticRegression())])
+assert _extract_scaler(mismatched, ["a", "b"]) is None, "expected None for a dimensionality mismatch"
+
+matched = _extract_scaler(mismatched, ["a", "b", "c"])
+assert matched is not None
+mean, scale = matched
+assert list(mean) == [1.0, 2.0, 3.0]
+assert list(scale) == [1.0, 1.0, 1.0]
+
+print("SCALER_EXTRACTION_OK")
+"""
+    env = os.environ.copy()
+    env["MODEL_PATH"] = str(MODEL_PATH)
+    env["MLFLOW_TRACKING_URI"] = "http://127.0.0.1:99999"
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert "SCALER_EXTRACTION_OK" in result.stdout, result.stdout + result.stderr
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([str(Path(__file__)), "-q"]))

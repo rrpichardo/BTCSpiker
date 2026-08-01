@@ -545,3 +545,120 @@ def test_performance_endpoint_normalizes_feature_ts_for_window_filter(
     body = response.json()
     # Both rows are within the last 30 minutes of "now" -> both counted.
     assert body["window"]["n_joined"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-level: stream_id segment scoping (a looping replay must not
+# double-count a prior pass into the same window)
+# ---------------------------------------------------------------------------
+
+
+def _pred_event(event_id: str, offset: int, *, feature_ts: str, api_ts: str, stream_id, stream_epoch=0) -> dict:
+    """Minimal raw PredictionEvent dict, insertable via materializer.insert_events."""
+    return {
+        "event_id": event_id,
+        "source_partition": 0,
+        "source_offset": offset,
+        "feature_ts": feature_ts,
+        "api_ts": api_ts,
+        "model_variant": "ml",
+        "model_version": "v1.0",
+        "score": 0.5,
+        "vol_60s": 0.00003,
+        "spread_bps": 1.0,
+        "log_return": 0.0001,
+        "trade_intensity_60s": 5.0,
+        "feature_id": f"BTC-USD:{stream_id}:{offset}",
+        "stream_epoch": stream_epoch,
+        "tau": 0.7,
+        "run_id": "run-1",
+        "stream_id": stream_id,
+        "ingest_mode": "replay",
+        "product_id": "BTC-USD",
+    }
+
+
+def _performance_body(db_path, monkeypatch, window_minutes=30):
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    materializer._state.ready = True
+    materializer._reset_perf_cache()
+    client = TestClient(materializer.app, raise_server_exceptions=False)
+    response = client.get(f"/predictions/performance?window_minutes={window_minutes}")
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_performance_window_excludes_prior_segment_at_same_feature_ts(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    conn = materializer.init_db(db_path)
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # A looping replay: pass 1 (older boot) and pass 2 (current boot) cover
+    # the IDENTICAL feature_ts range -- exactly what a `--loop` replay does.
+    # Only pass 2's stream_id is the active segment (its api_ts is newest).
+    pass_1 = [
+        _pred_event(f"p1-{i}", i, feature_ts=(now - timedelta(seconds=i)).isoformat(),
+                    api_ts=(now - timedelta(minutes=20)).isoformat(), stream_id="boot1:0")
+        for i in range(5)
+    ]
+    pass_2 = [
+        _pred_event(f"p2-{i}", 100 + i, feature_ts=(now - timedelta(seconds=i)).isoformat(),
+                    api_ts=now.isoformat(), stream_id="boot2:0")
+        for i in range(5)
+    ]
+    materializer.insert_events(conn, pass_1 + pass_2)
+    conn.close()
+
+    body = _performance_body(db_path, monkeypatch)
+
+    assert body["window"]["n_joined"] == 5  # pass_2 only, not 10
+    assert body["window"]["stream_id"] == "boot2:0"
+    assert body["chart"]["rows"]
+    assert body["chart"]["rendered_row_count"] == len(body["chart"]["rows"])
+
+
+def test_active_segment_follows_newest_boot_not_max_epoch(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    conn = materializer.init_db(db_path)
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # boot_a has a HIGHER epoch (3) but an OLDER api_ts -- a stale prior run.
+    # boot_b has epoch 0 (a fresh restart) but the NEWEST api_ts -- the live
+    # stream. MAX(stream_epoch) would wrongly pick boot_a; api_ts must win.
+    old_boot_high_epoch = _pred_event(
+        "old", 1, feature_ts=(now - timedelta(minutes=5)).isoformat(),
+        api_ts=(now - timedelta(minutes=20)).isoformat(), stream_id="boot_a:3", stream_epoch=3,
+    )
+    new_boot_low_epoch = _pred_event(
+        "new", 2, feature_ts=now.isoformat(),
+        api_ts=now.isoformat(), stream_id="boot_b:0", stream_epoch=0,
+    )
+    materializer.insert_events(conn, [old_boot_high_epoch, new_boot_low_epoch])
+    conn.close()
+
+    body = _performance_body(db_path, monkeypatch)
+
+    assert body["window"]["stream_id"] == "boot_b:0"
+    assert body["window"]["n_joined"] == 1
+
+
+def test_null_stream_id_rows_are_reported_as_unknown_lineage(tmp_path, monkeypatch):
+    db_path = tmp_path / "predictions.db"
+    conn = materializer.init_db(db_path)
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    current = _pred_event(
+        "current", 1, feature_ts=now.isoformat(), api_ts=now.isoformat(), stream_id="boot1:0"
+    )
+    legacy = _pred_event(
+        "legacy", 2, feature_ts=(now - timedelta(minutes=1)).isoformat(),
+        api_ts=(now - timedelta(minutes=1)).isoformat(), stream_id=None,
+    )
+    materializer.insert_events(conn, [current, legacy])
+    conn.close()
+
+    body = _performance_body(db_path, monkeypatch)
+
+    assert body["window"]["stream_id"] == "boot1:0"
+    assert body["window"]["n_joined"] == 1  # legacy row excluded, not silently merged
+    assert body["window"]["n_unknown_lineage"] == 1

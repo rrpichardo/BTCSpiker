@@ -21,7 +21,16 @@ export async function getJson(url, signal, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
     const res = await fetch(url, { signal: deadlineController.signal });
     if (!res.ok) {
-      throw new Error(`${url} -> HTTP ${res.status}`);
+      // .status lets a caller distinguish "the service never responded"
+      // (network failure, no status here) from "the service responded with
+      // an error" (502 = the upstream container is down/unreachable at the
+      // proxy; 500 = the service itself is up but its handler threw) —
+      // collapsing all of these into one message hid that a 500 here can
+      // mean a real, fixable server-side bug rather than "check the API
+      // service and retry".
+      const error = new Error(`${url} -> HTTP ${res.status}`);
+      error.status = res.status;
+      throw error;
     }
     return await res.json();
   } catch (error) {

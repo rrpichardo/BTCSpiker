@@ -145,9 +145,10 @@ HEALTH_READONLY_DEADLINE_SECONDS = 3.0
 PROGRESS_HANDLER_OPS = 10_000
 
 # Pinned event_id / column ordering shared by parsing, inserts, and reads.
-# feature_id/stream_epoch/tau/run_id/market_price are newer, nullable fields
-# (added via ALTER TABLE migration below) — old rows simply carry null for
-# them, which makes them ungradeable (or price-less) rather than wrong.
+# feature_id/stream_epoch/tau/run_id/market_price/stream_id/ingest_mode/
+# product_id are newer, nullable fields (added via ALTER TABLE migration
+# below) — old rows simply carry null for them, which makes them ungradeable
+# (or price-less, or of unknown lineage) rather than wrong.
 EVENT_FIELDS = [
     "event_id",
     "source_partition",
@@ -166,6 +167,9 @@ EVENT_FIELDS = [
     "tau",
     "run_id",
     "market_price",
+    "stream_id",
+    "ingest_mode",
+    "product_id",
 ]
 
 # Columns added after the original predictions table shipped; migrated in
@@ -176,6 +180,15 @@ PREDICTIONS_MIGRATED_COLUMNS = [
     ("tau", "REAL"),
     ("run_id", "TEXT"),
     ("market_price", "REAL"),
+    # stream_id identifies one continuous ingest run ({boot_id}:{epoch},
+    # stamped by the featurizer) so a looping replay or a process restart
+    # can be told apart from the currently-live stream (see
+    # _current_stream_segment / performance_window). ingest_mode
+    # ("live"/"replay") is stamped by the producer that knows it with
+    # certainty, never inferred downstream from timing.
+    ("stream_id", "TEXT"),
+    ("ingest_mode", "TEXT"),
+    ("product_id", "TEXT"),
 ]
 
 SCHEMA_SQL = """
@@ -216,7 +229,12 @@ ROWS_TOTAL_SQL = "SELECT COUNT(*) FROM predictions"
 
 # ticks.outcomes -> outcomes table. written_at is NOT part of the wire event —
 # it's stamped by the materializer at insert time (see insert_outcomes), which
-# is what the online-grading rule in evaluation.py hinges on.
+# is what the online-grading rule in evaluation.py hinges on. stream_id IS
+# part of the wire event (ProductStream._to_outcome stamps it, same as
+# feature_id/stream_epoch) so the "outcomes with no matching prediction"
+# query in performance_window can be scoped to the active segment -- that
+# query is rooted at outcomes, so it can't inherit scoping from a
+# predictions-side filter the way the LEFT JOIN queries do.
 OUTCOME_FIELDS = [
     "feature_id",
     "stream_epoch",
@@ -225,6 +243,7 @@ OUTCOME_FIELDS = [
     "future_vol_60s",
     "vol_spike",
     "label_schema",
+    "stream_id",
 ]
 
 OUTCOMES_SCHEMA_SQL = """
@@ -240,6 +259,15 @@ CREATE TABLE IF NOT EXISTS outcomes (
 )
 """
 
+# Same idempotent-migration pattern as PREDICTIONS_MIGRATED_COLUMNS, applied
+# to the outcomes table via its own _ensure_columns call (see
+# _init_db_with_recovery_status). CREATE TABLE IF NOT EXISTS is a no-op on an
+# existing DB, so a column can ONLY reach an already-deployed outcomes table
+# through this list -- editing OUTCOMES_SCHEMA_SQL alone does not migrate it.
+OUTCOMES_MIGRATED_COLUMNS = [
+    ("stream_id", "TEXT"),
+]
+
 INSERT_OUTCOME_SQL = (
     f"INSERT OR IGNORE INTO outcomes ({', '.join(OUTCOME_FIELDS)}, written_at) "
     f"VALUES ({', '.join('?' for _ in OUTCOME_FIELDS)}, ?)"
@@ -254,26 +282,35 @@ INDEX_SQL = [
     # few hundred rows, but a full-table-scan-per-row once predictions holds
     # ~100k rows (e.g. after a historical backfill), which never returns.
     "CREATE INDEX IF NOT EXISTS idx_pred_feature_id ON predictions(feature_id)",
+    # Backs the active-segment filter in performance_window/timeline_window
+    # (see _current_stream_segment) -- without it, every /predictions/performance
+    # and /predictions/timeline query full-scans predictions once the table
+    # holds ~100k rows, the same failure mode idx_pred_feature_id exists to
+    # prevent.
+    "CREATE INDEX IF NOT EXISTS idx_pred_stream_id ON predictions(stream_id)",
 ]
 
 # predictions LEFT JOIN outcomes, scoped by the predictions side's feature_ts
-# window. Outcome-side feature_id/stream_epoch/feature_ts are never selected:
-# they duplicate the prediction's own columns by construction (the featurizer
-# derives both from the same feature row), so selecting them would just
-# collide names in the result dict for no informational gain.
+# window. Outcome-side feature_id/stream_epoch/feature_ts/product_id are
+# never selected: they duplicate the prediction's own columns by
+# construction (the featurizer derives all of them from the same feature
+# row), so selecting them would just collide names in the result dict for
+# no informational gain.
 PERFORMANCE_JOIN_FIELDS = [f"p.{f}" for f in EVENT_FIELDS] + [
-    "o.product_id",
     "o.future_vol_60s",
     "o.vol_spike",
     "o.label_schema",
     "o.written_at",
 ]
 
+# stream_id IS ? (not = ?) is deliberately NULL-safe: SQLite's `= NULL` is
+# never true, so a request for the pre-lineage (NULL) segment must still be
+# able to match pre-lineage rows.
 PERFORMANCE_JOIN_SQL = f"""
 SELECT {', '.join(PERFORMANCE_JOIN_FIELDS)}
 FROM predictions p
 LEFT JOIN outcomes o ON p.feature_id = o.feature_id
-WHERE p.feature_ts >= ?
+WHERE p.feature_ts >= ? AND p.stream_id IS ?
 ORDER BY p.feature_ts ASC
 """
 
@@ -282,7 +319,7 @@ TIMELINE_JOIN_SQL = f"""
 SELECT {', '.join(PERFORMANCE_JOIN_FIELDS)}
 FROM predictions p
 LEFT JOIN outcomes o ON p.feature_id = o.feature_id
-WHERE p.feature_ts >= ? AND p.feature_ts < ?
+WHERE p.feature_ts >= ? AND p.feature_ts < ? AND p.stream_id IS ?
 ORDER BY p.feature_ts ASC
 """
 
@@ -385,6 +422,7 @@ def _init_db_with_recovery_status(
         conn.execute(SCHEMA_SQL)
         _ensure_columns(conn, "predictions", PREDICTIONS_MIGRATED_COLUMNS)
         conn.execute(OUTCOMES_SCHEMA_SQL)
+        _ensure_columns(conn, "outcomes", OUTCOMES_MIGRATED_COLUMNS)
         for index_sql in INDEX_SQL:
             conn.execute(index_sql)
         conn.commit()
@@ -603,38 +641,70 @@ def _rows_total(path: str | Path) -> tuple[int, bool]:
         return 0, False
 
 
+def _current_stream_segment(conn: sqlite3.Connection) -> str | None:
+    """The stream_id of the currently-active ingest run: the stream_id of
+    the single newest prediction, by the same api_ts-first ordering as
+    NEWEST_ORDER_SQL. None if predictions is empty or every row predates
+    the A4 lineage migration (stream_id NULL).
+
+    Deliberately NOT MAX(stream_epoch): stream_id encodes {boot_id}:{epoch},
+    and boot_id is regenerated on every featurizer process restart while
+    epoch resets to 0 -- MAX(stream_epoch) would then select a stale prior
+    boot's highest epoch instead of the live stream. Ordering by api_ts
+    (wall-clock, monotonic across both loop wraps and restarts) instead
+    means the freshest write always wins, so a late-arriving replay from an
+    old boot can't hijack the active segment.
+    """
+    row = conn.execute(f"SELECT stream_id FROM predictions {NEWEST_ORDER_SQL} LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
 def performance_window(
-    path_or_conn: str | Path | sqlite3.Connection, cutoff: str
+    path_or_conn: str | Path | sqlite3.Connection, cutoff: str, stream_id: str | None
 ) -> dict:
     """Gather everything the /predictions/performance handler needs for
-    predictions with feature_ts >= `cutoff` (already `_normalize_ts`-d):
+    predictions with feature_ts >= `cutoff` (already `_normalize_ts`-d) AND
+    stream_id matching the active segment (see `_current_stream_segment`):
 
-        joined_rows            -- predictions LEFT JOIN outcomes, for
-                                   evaluation.compute_performance
-        oldest_feature_ts       -- oldest prediction feature_ts in the whole
-                                   table (None if empty) -- used to report
-                                   `complete`
-        n_outcomes_unmatched    -- outcomes in-window with no matching
-                                   prediction row at all; a plain LEFT JOIN
-                                   rooted at predictions can never surface
-                                   these, so it's a separate query
+        joined_rows            -- predictions LEFT JOIN outcomes, scoped to
+                                   this segment, for evaluation.compute_performance
+        oldest_feature_ts       -- oldest feature_ts in THIS SEGMENT (None if
+                                   empty) -- used to report `complete`. Scoped,
+                                   not whole-table: an old, unrelated segment's
+                                   deeper history must not make a freshly
+                                   started segment look "complete".
+        n_outcomes_unmatched    -- outcomes in-window in THIS SEGMENT with no
+                                   matching prediction row at all; a plain
+                                   LEFT JOIN rooted at predictions can never
+                                   surface these, so it's a separate query
+        n_unknown_lineage       -- predictions in-window with stream_id NULL
+                                   (pre-migration rows) -- reported so they
+                                   are visibly excluded, never silently
+                                   dropped or folded into the active segment
     """
 
     def _query(conn: sqlite3.Connection) -> dict:
-        cur = conn.execute(PERFORMANCE_JOIN_SQL, (cutoff,))
+        cur = conn.execute(PERFORMANCE_JOIN_SQL, (cutoff, stream_id))
         columns = [d[0] for d in cur.description]
         joined_rows = [dict(zip(columns, row)) for row in cur.fetchall()]
 
-        oldest = conn.execute("SELECT MIN(feature_ts) FROM predictions").fetchone()[0]
+        oldest = conn.execute(
+            "SELECT MIN(feature_ts) FROM predictions WHERE stream_id IS ?", (stream_id,)
+        ).fetchone()[0]
 
         unmatched = conn.execute(
             """
             SELECT COUNT(*) FROM outcomes o
-            WHERE o.feature_ts >= ?
+            WHERE o.feature_ts >= ? AND o.stream_id IS ?
             AND NOT EXISTS (
                 SELECT 1 FROM predictions p WHERE p.feature_id = o.feature_id
             )
             """,
+            (cutoff, stream_id),
+        ).fetchone()[0]
+
+        unknown_lineage = conn.execute(
+            "SELECT COUNT(*) FROM predictions WHERE feature_ts >= ? AND stream_id IS NULL",
             (cutoff,),
         ).fetchone()[0]
 
@@ -642,6 +712,7 @@ def performance_window(
             "joined_rows": joined_rows,
             "oldest_feature_ts": oldest,
             "n_outcomes_unmatched": unmatched,
+            "n_unknown_lineage": unknown_lineage,
         }
 
     if isinstance(path_or_conn, sqlite3.Connection):
@@ -655,26 +726,32 @@ def performance_window(
 
 
 def timeline_window(
-    path_or_conn: str | Path | sqlite3.Connection, from_ts: str, to_ts: str
+    path_or_conn: str | Path | sqlite3.Connection,
+    from_ts: str,
+    to_ts: str,
+    stream_id: str | None,
 ) -> dict:
     """Gather everything /predictions/timeline needs for predictions with
-    feature_ts in [from_ts, to_ts) (both already `_normalize_ts`-d):
+    feature_ts in [from_ts, to_ts) (both already `_normalize_ts`-d) AND
+    stream_id matching the active segment (see `_current_stream_segment`):
 
-        joined_rows      -- predictions LEFT JOIN outcomes, ordered by
-                             feature_ts ascending, for timeline.build_timeline
-        available_from   -- oldest feature_ts in the WHOLE table (None if
+        joined_rows      -- predictions LEFT JOIN outcomes, scoped to this
+                             segment, ordered by feature_ts ascending, for
+                             timeline.build_timeline
+        available_from   -- oldest feature_ts in THIS SEGMENT (None if
                              empty) -- used to report retained-history coverage
-        available_to     -- newest feature_ts in the whole table -- also the
+        available_to     -- newest feature_ts in THIS SEGMENT -- also the
                              maturity anchor for pending-vs-unavailable
     """
 
     def _query(conn: sqlite3.Connection) -> dict:
-        cur = conn.execute(TIMELINE_JOIN_SQL, (from_ts, to_ts))
+        cur = conn.execute(TIMELINE_JOIN_SQL, (from_ts, to_ts, stream_id))
         columns = [d[0] for d in cur.description]
         joined_rows = [dict(zip(columns, row)) for row in cur.fetchall()]
 
         bounds = conn.execute(
-            "SELECT MIN(feature_ts), MAX(feature_ts) FROM predictions"
+            "SELECT MIN(feature_ts), MAX(feature_ts) FROM predictions WHERE stream_id IS ?",
+            (stream_id,),
         ).fetchone()
 
         return {
@@ -1370,15 +1447,27 @@ def _reset_perf_cache() -> None:
 
 
 def _newest_predictions_feature_ts(
-    path_or_conn: str | Path | sqlite3.Connection,
+    path_or_conn: str | Path | sqlite3.Connection, stream_id: str | None
 ) -> str | None:
+    """MAX(feature_ts) WITHIN `stream_id` — not whole-table. Anchoring on
+    the whole table would let a completed prior segment's feature_ts (later
+    in wall-clock terms, since it finished before the current segment even
+    if the current segment's own feature_ts values are lower/replay-paced)
+    freeze the window near-empty while the active segment fills in behind
+    it -- see the module-level stream_id comments for why segments need
+    their own anchor at all.
+    """
     if isinstance(path_or_conn, sqlite3.Connection):
-        row = path_or_conn.execute("SELECT MAX(feature_ts) FROM predictions").fetchone()
+        row = path_or_conn.execute(
+            "SELECT MAX(feature_ts) FROM predictions WHERE stream_id IS ?", (stream_id,)
+        ).fetchone()
         return row[0] if row else None
 
     conn = _open_readonly(path_or_conn)
     try:
-        row = conn.execute("SELECT MAX(feature_ts) FROM predictions").fetchone()
+        row = conn.execute(
+            "SELECT MAX(feature_ts) FROM predictions WHERE stream_id IS ?", (stream_id,)
+        ).fetchone()
         return row[0] if row else None
     finally:
         conn.close()
@@ -1389,7 +1478,13 @@ def _build_performance_payload(window_minutes: int) -> dict:
 
     The window is anchored to the newest available prediction's feature_ts
     (not wall-clock now) so replay/backtest runs — where feature_ts can lag
-    far behind real time — still see a populated window.
+    far behind real time — still see a populated window. Both the anchor and
+    the query are scoped to the single currently-active stream_id segment
+    (see `_current_stream_segment`), so a looping replay's earlier passes —
+    which share the same feature_ts range as the current pass — can't
+    double-count into `n_joined`/`n_graded`, and the chart (which already
+    filters to one stream_epoch) describes the same population the metrics
+    do.
     """
     now = datetime.now(timezone.utc)
 
@@ -1402,16 +1497,18 @@ def _build_performance_payload(window_minutes: int) -> dict:
     # from a moment that no longer matches what performance_window sees.
     conn = _open_readonly(PREDICTIONS_DB_PATH)
     try:
-        newest_feature_ts = _newest_predictions_feature_ts(conn)
+        stream_id = _current_stream_segment(conn)
+        newest_feature_ts = _newest_predictions_feature_ts(conn, stream_id)
         anchor = _parse_iso(newest_feature_ts) or now
         cutoff = _normalize_ts((anchor - timedelta(minutes=window_minutes)).isoformat())
-        window_data = performance_window(conn, cutoff)
+        window_data = performance_window(conn, cutoff, stream_id)
     finally:
         conn.close()
 
     oldest_feature_ts = window_data["oldest_feature_ts"]
-    # "complete" = the DB's retained history actually reaches back past the
-    # cutoff, i.e. pruning/short history hasn't silently truncated the window.
+    # "complete" = this segment's retained history actually reaches back past
+    # the cutoff, i.e. pruning/short history hasn't silently truncated the
+    # window.
     complete = oldest_feature_ts is None or oldest_feature_ts <= cutoff
 
     result = evaluation.compute_performance(
@@ -1421,10 +1518,12 @@ def _build_performance_payload(window_minutes: int) -> dict:
         drift_pr_auc_ratio=DRIFT_PR_AUC_RATIO,
         baseline_vol_threshold=BASELINE_VOL_THRESHOLD,
         adaptive_percentile=ADAPTIVE_PERCENTILE,
+        stream_id=stream_id,
     )
     result["window"]["from_feature_ts"] = cutoff
     result["window"]["to_feature_ts"] = newest_feature_ts
     result["window"]["n_outcomes_unmatched"] = window_data["n_outcomes_unmatched"]
+    result["window"]["n_unknown_lineage"] = window_data["n_unknown_lineage"]
 
     return {
         "as_of": now.isoformat(),
@@ -1452,13 +1551,21 @@ def _build_timeline_payload(
     from_dt (not a row-count-based guess -- Coinbase can exceed 1 event/s,
     so a fixed row cap does not reliably imply a fixed hours-of-history
     figure). The maturity anchor for pending-vs-unavailable classification
-    is available_to (the newest feature_ts in the whole table), never
-    wall-clock now, so replay/backtest data classifies identically to live.
+    is available_to (the newest feature_ts in the active segment -- see
+    `_current_stream_segment` -- never wall-clock now), so replay/backtest
+    data classifies identically to live. Scoping to one segment also keeps a
+    looping replay's earlier passes from bucketing into the same timeline
+    points as the current pass.
     """
     from_ts = _normalize_ts(from_dt.isoformat())
     to_ts = _normalize_ts(to_dt.isoformat())
 
-    window_data = timeline_window(PREDICTIONS_DB_PATH, from_ts, to_ts)
+    conn = _open_readonly(PREDICTIONS_DB_PATH)
+    try:
+        stream_id = _current_stream_segment(conn)
+        window_data = timeline_window(conn, from_ts, to_ts, stream_id)
+    finally:
+        conn.close()
     available_from = window_data["available_from"]
     available_to = window_data["available_to"]
     complete = available_from is None or available_from <= from_ts

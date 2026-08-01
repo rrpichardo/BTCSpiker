@@ -41,7 +41,7 @@ The three drifted features — `n_ticks_60s`, `trade_intensity_60s`, and `spread
 
 ## Training Reference Dataset
 
-The full training reference dataset (`features.parquet`, 784K rows, 48MB) is not committed to this repo due to GitHub file size limits. It lives in the model training environment. For reproducibility, a 10-minute sample of the feature schema is committed at `handoff/data_sample/features_slice.csv`.
+The full training reference dataset (`features.parquet`, 784K rows, 48MB) is not committed to this repo due to GitHub file size limits. It lives in the model training environment. A 10-minute sample of the feature *schema* is committed at `handoff/data_sample/features_slice.csv` for pipeline/schema testing — it is not representative of the training distribution (see its `manifest.json`) and `scripts/drift_report.py` refuses to accept it as `--reference`.
 
 ## Drift Monitoring Approach
 

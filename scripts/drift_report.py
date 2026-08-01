@@ -1,13 +1,13 @@
 """
 Regenerate an Evidently train-vs-current drift report on demand.
 
-Compares a reference dataset (typically the training feature slice) against
-a current dataset (typically the live featurizer's Parquet output) and writes
-a self-contained HTML report.
+Compares a reference dataset (the real training feature corpus, or a
+held-out split of it) against a current dataset (typically the live
+featurizer's Parquet output) and writes a self-contained HTML report.
 
 Usage:
     python scripts/drift_report.py \\
-        --reference handoff/data_sample/features_slice.csv \\
+        --reference /path/to/training/features.parquet \\
         --current   data/processed/features.parquet \\
         --out       reports/drift_$(date +%Y%m%d).html
 """
@@ -21,6 +21,12 @@ import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("drift_report")
+
+# handoff/data_sample/ is a schema/smoke fixture (see its manifest.json), not
+# a distribution proxy — a 10-minute slice compared against itself reports
+# "no drift" on features that are genuinely miscalibrated. Refuse it outright
+# rather than silently producing a report nobody should trust.
+SMOKE_FIXTURE_DIR = "handoff/data_sample"
 
 FEATURE_COLS = [
     "log_return",
@@ -82,6 +88,14 @@ def main():
 
     if not ref_path.exists():
         log.error("reference not found: %s", ref_path); sys.exit(1)
+    if SMOKE_FIXTURE_DIR in ref_path.as_posix():
+        log.error(
+            "refusing to use %s as a drift reference — it is a schema/smoke "
+            "fixture, not a training-distribution proxy (see its manifest.json). "
+            "Point --reference at the real training corpus.",
+            ref_path,
+        )
+        sys.exit(1)
     if not cur_path.exists():
         log.error("current not found: %s — is the featurizer running?", cur_path); sys.exit(1)
 

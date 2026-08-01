@@ -5,7 +5,7 @@ import {
   buildEvalChartData,
   outcomeBands,
   formatMetric,
-  leadTimeLabel,
+  formatSeconds,
 } from "./performanceData.js";
 
 test("buildEvalChartData sorts by feature_ts and drops invalid timestamps", () => {
@@ -93,9 +93,9 @@ test("formatMetric renders null and undefined as an em dash", () => {
   assert.equal(formatMetric(37, 0), "37");
 });
 
-test("leadTimeLabel formats seconds and falls back for null", () => {
-  assert.equal(leadTimeLabel(57.4), "57s ahead");
-  assert.equal(leadTimeLabel(0), "0s ahead");
-  assert.equal(leadTimeLabel(null), "—");
-  assert.equal(leadTimeLabel(undefined), "—");
+test("formatSeconds rounds and falls back for null", () => {
+  assert.equal(formatSeconds(57.4), "57s");
+  assert.equal(formatSeconds(0), "0s");
+  assert.equal(formatSeconds(null), "—");
+  assert.equal(formatSeconds(undefined), "—");
 });

@@ -98,7 +98,7 @@ def test_timeline_windows_and_orders_by_feature_ts_not_api_ts(tmp_path):
     )
 
     window = materializer.timeline_window(
-        conn, "2026-07-16T19:00:00+00:00", "2026-07-16T19:00:11+00:00"
+        conn, "2026-07-16T19:00:00+00:00", "2026-07-16T19:00:11+00:00", None
     )
 
     feature_order = [row["feature_ts"] for row in window["joined_rows"]]
@@ -211,7 +211,7 @@ def test_timeline_classifies_all_six_states(tmp_path):
     )
 
     window = materializer.timeline_window(
-        conn, "2026-07-16T18:59:00+00:00", "2026-07-16T19:11:00+00:00"
+        conn, "2026-07-16T18:59:00+00:00", "2026-07-16T19:11:00+00:00", None
     )
     anchor_dt = materializer._parse_iso(window["available_to"])
     points, aggregated, _ = timeline.build_timeline(
@@ -307,7 +307,7 @@ def test_timeline_bucket_keeps_predictions_paired_with_their_own_outcome(tmp_pat
     from_dt = materializer._parse_iso("2026-07-16T19:00:00+00:00")
     to_dt = materializer._parse_iso("2026-07-16T19:05:00+00:00")
     window = materializer.timeline_window(
-        conn, "2026-07-16T19:00:00+00:00", "2026-07-16T19:05:00+00:00"
+        conn, "2026-07-16T19:00:00+00:00", "2026-07-16T19:05:00+00:00", None
     )
     anchor_dt = materializer._parse_iso(window["available_to"])
 
@@ -337,7 +337,7 @@ def test_timeline_bucket_preserves_max_score(tmp_path):
     from_dt = materializer._parse_iso("2026-07-16T19:00:00+00:00")
     to_dt = materializer._parse_iso("2026-07-16T19:05:00+00:00")
     window = materializer.timeline_window(
-        conn, "2026-07-16T19:00:00+00:00", "2026-07-16T19:05:00+00:00"
+        conn, "2026-07-16T19:00:00+00:00", "2026-07-16T19:05:00+00:00", None
     )
     anchor_dt = materializer._parse_iso(window["available_to"])
 
@@ -367,7 +367,7 @@ def test_timeline_reports_incomplete_when_range_exceeds_retained_history(tmp_pat
 
     _conn2 = _sqlite3.connect(str(monkeypatch_db))
     window = materializer.timeline_window(
-        _conn2, "2026-07-16T00:00:00+00:00", "2026-07-16T23:59:00+00:00"
+        _conn2, "2026-07-16T00:00:00+00:00", "2026-07-16T23:59:00+00:00", None
     )
     assert window["available_from"] == "2026-07-16T19:00:00.000000+00:00"
     assert window["available_to"] == "2026-07-16T19:00:00.000000+00:00"
@@ -492,3 +492,62 @@ def test_fastapi_timeline_returns_503_before_readiness(tmp_path, monkeypatch):
 
     assert resp.status_code == 503
     assert db_path.exists() is False
+
+
+# ---------------------------------------------------------------------------
+# stream_id segment scoping: a looping replay's earlier pass must not bucket
+# into the same timeline points as the current pass
+# ---------------------------------------------------------------------------
+
+
+def test_fastapi_timeline_excludes_prior_segment(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    conn = materializer.init_db(db_path)
+
+    # Both passes cover the identical feature_ts range -- exactly what a
+    # `--loop` replay does. boot2 has the newer api_ts, so it's the active
+    # segment; boot1's rows must not double the per-bucket totals.
+    materializer.insert_events(
+        conn,
+        [
+            _event(
+                f"boot1-{i}", i,
+                feature_ts=f"2026-07-16T19:00:{i:02d}Z",
+                api_ts="2026-07-16T18:00:00+00:00",
+                feature_id=f"BTC-USD:boot1:0:{i}",
+                stream_id="boot1:0",
+            )
+            for i in range(3)
+        ]
+        + [
+            _event(
+                f"boot2-{i}", 100 + i,
+                feature_ts=f"2026-07-16T19:00:{i:02d}Z",
+                api_ts="2026-07-16T20:00:00+00:00",
+                feature_id=f"BTC-USD:boot2:0:{i}",
+                stream_id="boot2:0",
+            )
+            for i in range(3)
+        ],
+    )
+    conn.close()
+
+    monkeypatch.setattr(materializer, "PREDICTIONS_DB_PATH", str(db_path))
+    materializer._state.ready = True
+    client = TestClient(materializer.app)
+
+    resp = client.get(
+        "/predictions/timeline",
+        params={
+            "from": "2026-07-16T19:00:00Z",
+            "to": "2026-07-16T19:01:00Z",
+            "resolution": 60,  # force one aggregated bucket covering all 3+3 rows
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregated"] is True
+    assert len(body["points"]) == 1
+    total_in_bucket = sum(body["points"][0]["classes"].values())
+    assert total_in_bucket == 3  # boot2 only, not 6

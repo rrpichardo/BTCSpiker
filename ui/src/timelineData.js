@@ -69,6 +69,28 @@ function classFlags(point) {
 // timestamp-ordered chart points. Missing price/score become null (not
 // dropped, not zero) so a chart can render a genuine gap rather than a
 // misleading interpolation or a false zero.
+// Precision scales with the rendered price range, not a fixed $1000
+// granularity — over a short window (a few minutes) BTC typically moves
+// tens of dollars, so a fixed "$Xk" formatter collapses every auto-generated
+// axis tick to the same string (all five read "$70k"). `domainSpan` is the
+// max-min of the prices actually being plotted.
+export function priceTickLabel(value, domainSpan) {
+  if (domainSpan >= 5000) return `$${Math.round(value / 1000)}k`;
+  if (domainSpan >= 500) return `$${(value / 1000).toFixed(1)}k`;
+  if (domainSpan >= 50) return `$${Math.round(value)}`;
+  return `$${value.toFixed(1)}`;
+}
+
+// Widens alongside priceTickLabel's precision so longer labels ("$69800.5")
+// aren't clipped. Applied to BOTH stacked charts in TimelineCharts.jsx so
+// they stay pixel-aligned even though only the price chart's labels vary.
+export function priceTickAxisWidth(domainSpan) {
+  if (domainSpan >= 5000) return 56;
+  if (domainSpan >= 500) return 64;
+  if (domainSpan >= 50) return 68;
+  return 76;
+}
+
 export function buildTimelinePoints(points) {
   if (!Array.isArray(points)) return [];
   return points

@@ -301,6 +301,10 @@ async def ticker_task(
                                         "best_ask":     best_ask,
                                         "volume_24_h":  tick.get("volume_24_h"),
                                         "timestamp":    ts,
+                                        # Stamped here, not inferred downstream from timing —
+                                        # this is the one place that knows with certainty the
+                                        # tick came from the live exchange feed.
+                                        "ingest_mode":  "live",
                                     }
                                     value = json.dumps(payload)
 

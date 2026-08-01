@@ -278,6 +278,38 @@
           "placement": "bottom"
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "Feature z-score vs training distribution (avg |z|)",
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 21
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(feature_zscore_abs_sum[5m])) by (feature) / sum(rate(feature_zscore_abs_count[5m])) by (feature)",
+          "legendFormat": "{{feature}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "displayName": "avg |z|"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     }
   ],
   "refresh": "5s",

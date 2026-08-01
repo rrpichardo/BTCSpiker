@@ -31,11 +31,6 @@ const METRIC_ROWS = [
   },
 ];
 
-function nullCellTitle(series, rowKey) {
-  if (rowKey !== "pr_auc" || series.pr_auc !== null || !series.pr_auc_reason) return undefined;
-  return series.pr_auc_reason;
-}
-
 export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
   const series = mode?.series ?? [];
   const baseRate = mode?.base_rate;
@@ -48,7 +43,9 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
   return (
     <div className="metrics-table-wrap">
       {!mlAvailable && (
-        <p className="state-message">ML model produced no graded predictions in this window.</p>
+        <p className="state-message">
+          {mode?.threshold_info || "ML model produced no graded predictions in this window."}
+        </p>
       )}
       {zeroPositives && (
         <p className="state-message">
@@ -85,8 +82,11 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
                   {row.label} <InfoIcon label={row.info} />
                 </th>
                 {series.map((s) => (
-                  <td key={s.name} title={nullCellTitle(s, row.key)}>
+                  <td key={s.name}>
                     {formatMetric(s[row.key])}
+                    {row.key === "pr_auc" && s.pr_auc == null && s.pr_auc_reason && (
+                      <InfoIcon label={s.pr_auc_reason} />
+                    )}
                   </td>
                 ))}
                 <td className={refCellClass}>
@@ -125,11 +125,10 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
             </tr>
             <tr>
               <th scope="row">
-                Spike rate <InfoIcon label="How often real spikes occurred in this window." />
+                Spike rate{" "}
+                <InfoIcon label="A single window-level fact (not measured per series): how often real spikes occurred in this window." />
               </th>
-              {series.map((s) => (
-                <td key={s.name}>{formatMetric(baseRate)}</td>
-              ))}
+              <td colSpan={series.length || 1}>{formatMetric(baseRate)}</td>
               <td className={refCellClass}>—</td>
               <td className={refCellClass}>—</td>
             </tr>

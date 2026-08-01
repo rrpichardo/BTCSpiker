@@ -480,19 +480,27 @@ def compute_performance(
     drift_pr_auc_ratio: float = 0.7,
     baseline_vol_threshold: float = 4.8e-5,
     adaptive_percentile: float = 85,
+    stream_id: str | None = None,
 ) -> dict:
     """Assemble the evaluation half of the /predictions/performance snapshot.
 
     `joined_rows` is the result of predictions LEFT JOIN outcomes (see module
     docstring) — every prediction column plus the outcome-only columns
-    (product_id, future_vol_60s, vol_spike, label_schema, written_at).
+    (future_vol_60s, vol_spike, label_schema, written_at).
+
+    `stream_id` identifies the single ingest segment `joined_rows` was
+    already scoped to by the caller's SQL (materializer.py's
+    performance_window) — it is not used to filter here. Echoing it in
+    `window` lets a caller (or a test) confirm the metrics and the chart
+    (`chart.stream_epoch`) describe the same population, rather than the
+    chart silently re-deriving its own notion of "current" via max().
 
     The returned `window` sub-dict only carries what's derivable from
     `joined_rows` (n_joined, n_graded, n_scored_late, n_predictions_unmatched,
-    median_lead_seconds). The caller merges in from_feature_ts, to_feature_ts,
-    and n_outcomes_unmatched, which require a separate SQL query against the
-    outcomes table. Likewise `as_of`, `window_minutes`, and `complete` are
-    added by the caller.
+    median_lead_seconds, stream_id). The caller merges in from_feature_ts,
+    to_feature_ts, n_outcomes_unmatched, and n_unknown_lineage, which require
+    separate SQL queries. Likewise `as_of`, `window_minutes`, and `complete`
+    are added by the caller.
     """
     n_joined = len(joined_rows)
     graded_rows, lead_seconds, n_scored_late, n_predictions_unmatched = _split_graded(
@@ -541,8 +549,15 @@ def compute_performance(
             "percentile": adaptive_percentile,
         }
     else:
+        # `is not None` (not `or float("-inf")`): a genuine future_vol_60s of
+        # 0.0 is falsy in Python, so the old `or` idiom silently substituted
+        # -inf for it here even though adaptive_threshold() above correctly
+        # included that same 0.0 via `is not None`. Doesn't change any label
+        # in practice (realized volatility is never negative, so 0.0 and
+        # -inf both fail a `> adaptive_thresh` comparison the same way) --
+        # fixed for correctness/clarity, not because it was misgrading rows.
         adaptive_labels = [
-            1 if (row.get("future_vol_60s") or float("-inf")) > adaptive_thresh else 0
+            1 if row.get("future_vol_60s") is not None and row["future_vol_60s"] > adaptive_thresh else 0
             for row in graded_rows
         ]
         adaptive_threshold_info = (
@@ -572,6 +587,7 @@ def compute_performance(
             "n_scored_late": n_scored_late,
             "n_predictions_unmatched": n_predictions_unmatched,
             "median_lead_seconds": median_lead_seconds,
+            "stream_id": stream_id,
         },
         "params": {
             "label_horizon_seconds": LABEL_HORIZON_SECONDS,
@@ -585,6 +601,10 @@ def compute_performance(
         "reference": REFERENCE,
         "chart": {
             "stream_epoch": max_epoch,
+            # Post-downsample count -- compare against window.n_joined (the
+            # pre-downsample source population) to see how much _chart_rows'
+            # MAX_CHART_POINTS cap actually thinned.
+            "rendered_row_count": len(chart_rows),
             "rows": chart_rows,
         },
     }

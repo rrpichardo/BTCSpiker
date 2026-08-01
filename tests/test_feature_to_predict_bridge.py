@@ -16,6 +16,9 @@ FEATURE_MESSAGE = {
     "spread_mean_60s": 4.0,
     "feature_id": "BTC-USD:0:41",
     "stream_epoch": 0,
+    "stream_id": "boot1:0",
+    "ingest_mode": "replay",
+    "product_id": "BTC-USD",
 }
 
 VALID_RESPONSE = {
@@ -42,6 +45,9 @@ EXPECTED_EVENT = {
     "trade_intensity_60s": 3.0,
     "feature_id": "BTC-USD:0:41",
     "stream_epoch": 0,
+    "stream_id": "boot1:0",
+    "ingest_mode": "replay",
+    "product_id": "BTC-USD",
     "tau": 0.7015,
     "run_id": "abc123",
     "market_price": 65000.5,
@@ -98,6 +104,9 @@ def test_prediction_event_uses_original_feature_timestamp_and_exact_contract():
         feature_ts=FEATURE_MESSAGE["timestamp"],
         feature_id=FEATURE_MESSAGE["feature_id"],
         stream_epoch=FEATURE_MESSAGE["stream_epoch"],
+        stream_id=FEATURE_MESSAGE["stream_id"],
+        ingest_mode=FEATURE_MESSAGE["ingest_mode"],
+        product_id=FEATURE_MESSAGE["product_id"],
     )
 
     assert event == EXPECTED_EVENT
@@ -115,6 +124,9 @@ def test_prediction_event_forwards_market_price_and_keeps_timestamps_distinct():
         feature_ts=FEATURE_MESSAGE["timestamp"],
         feature_id=FEATURE_MESSAGE["feature_id"],
         stream_epoch=FEATURE_MESSAGE["stream_epoch"],
+        stream_id=FEATURE_MESSAGE["stream_id"],
+        ingest_mode=FEATURE_MESSAGE["ingest_mode"],
+        product_id=FEATURE_MESSAGE["product_id"],
     )
     event_without_price = bridge._build_prediction_event(
         FakeMessage(),
@@ -123,6 +135,9 @@ def test_prediction_event_forwards_market_price_and_keeps_timestamps_distinct():
         feature_ts=message_without_price["timestamp"],
         feature_id=message_without_price["feature_id"],
         stream_epoch=message_without_price["stream_epoch"],
+        stream_id=message_without_price["stream_id"],
+        ingest_mode=message_without_price["ingest_mode"],
+        product_id=message_without_price["product_id"],
     )
 
     assert event_with_price["market_price"] == 65000.5
@@ -134,8 +149,8 @@ def test_prediction_event_forwards_market_price_and_keeps_timestamps_distinct():
 
 def test_prediction_event_tolerates_old_format_messages_without_identity():
     # Backlog messages published before the featurizer split lack
-    # feature_id/stream_epoch, and older API responses lack tau/run_id —
-    # the event must carry nulls, never crash.
+    # feature_id/stream_epoch/stream_id/ingest_mode/product_id, and older
+    # API responses lack tau/run_id — the event must carry nulls, never crash.
     old_response = {
         k: v for k, v in VALID_RESPONSE.items() if k not in ("tau", "run_id")
     }
@@ -146,10 +161,16 @@ def test_prediction_event_tolerates_old_format_messages_without_identity():
         feature_ts=FEATURE_MESSAGE["timestamp"],
         feature_id=None,
         stream_epoch=None,
+        stream_id=None,
+        ingest_mode=None,
+        product_id=None,
     )
 
     assert event["feature_id"] is None
     assert event["stream_epoch"] is None
+    assert event["stream_id"] is None
+    assert event["ingest_mode"] is None
+    assert event["product_id"] is None
     assert event["tau"] is None
     assert event["run_id"] is None
 
