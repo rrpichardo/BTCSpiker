@@ -9,7 +9,7 @@ import {
   ReferenceArea,
   ResponsiveContainer,
 } from "recharts";
-import { classBands } from "../timelineData.js";
+import { classBands, priceTickLabel, priceTickAxisWidth } from "../timelineData.js";
 import { formatDateTime } from "../format.js";
 
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -23,10 +23,6 @@ function timeLabel(timestamp) {
   return Number.isNaN(date.getTime()) ? "Unavailable" : timeFormatter.format(date);
 }
 
-function priceTickLabel(value) {
-  return `$${Math.round(value / 1000)}k`;
-}
-
 function tooltipFormatter(value, name) {
   if (value === null || typeof value !== "number") return ["—", name];
   if (name === "BTC price") return [`$${value.toFixed(2)}`, name];
@@ -35,18 +31,24 @@ function tooltipFormatter(value, name) {
 
 // Shared axis geometry so the two stacked charts stay pixel-aligned: same
 // left/right margins and the same YAxis width on both, regardless of which
-// one shows tick labels.
+// one shows tick labels. The width itself is computed per-render from the
+// price domain (see priceTickAxisWidth) rather than fixed.
 const CHART_MARGIN = { top: 8, right: 40, left: 0, bottom: 8 };
-const Y_AXIS_WIDTH = 56;
 
-// Actual BTC price (top) and spike prediction-vs-reality (bottom), stacked
-// with a shared x-axis, range, and hover cursor (recharts syncId). No dual
-// y-axis: price and score live on genuinely different scales, and forcing
-// them onto one panel would visually imply a correlation the scales alone
-// don't support.
+// BTC price (top) and spike prediction-vs-reality (bottom), stacked with a
+// shared x-axis, range, and hover cursor (recharts syncId). No dual y-axis:
+// price and score live on genuinely different scales, and forcing them onto
+// one panel would visually imply a correlation the scales alone don't
+// support.
 export default function TimelineCharts({ points, from, to, complete, availableFrom }) {
   const summaryId = useId();
   const domain = useMemo(() => [Date.parse(from), Date.parse(to)], [from, to]);
+
+  const priceDomainSpan = useMemo(() => {
+    const prices = points.map((p) => p.price).filter((v) => typeof v === "number");
+    return prices.length >= 2 ? Math.max(...prices) - Math.min(...prices) : 0;
+  }, [points]);
+  const priceAxisWidth = priceTickAxisWidth(priceDomainSpan);
 
   const predictedBands = useMemo(() => classBands(points, "predicted"), [points]);
   const confirmedBands = useMemo(() => classBands(points, "confirmedSpike"), [points]);
@@ -72,9 +74,9 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
           {summary}
         </figcaption>
         <p className="eyebrow" id="timeline-price-heading">
-          Actual BTC price
+          BTC price
         </p>
-        <div className="score-chart-visual" role="img" aria-label="Actual BTC price over the selected range">
+        <div className="score-chart-visual" role="img" aria-label="BTC price over the selected range">
           <ResponsiveContainer width="100%" height={160}>
             <LineChart data={points} syncId="timeline" margin={CHART_MARGIN}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -89,9 +91,9 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
               />
               <YAxis
                 domain={["auto", "auto"]}
-                tickFormatter={priceTickLabel}
+                tickFormatter={(value) => priceTickLabel(value, priceDomainSpan)}
                 tick={{ fill: "var(--text-muted)", fontSize: 11 }}
-                width={Y_AXIS_WIDTH}
+                width={priceAxisWidth}
               />
               <Tooltip
                 contentStyle={{
@@ -138,7 +140,7 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
                 tick={{ fill: "var(--text-muted)", fontSize: 11 }}
                 minTickGap={40}
               />
-              <YAxis domain={[0, 1]} tick={{ fill: "var(--text-muted)", fontSize: 11 }} width={Y_AXIS_WIDTH} />
+              <YAxis domain={[0, 1]} tick={{ fill: "var(--text-muted)", fontSize: 11 }} width={priceAxisWidth} />
               <Tooltip
                 contentStyle={{
                   background: "var(--bg-panel)",

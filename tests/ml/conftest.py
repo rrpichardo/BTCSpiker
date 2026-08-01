@@ -13,6 +13,6 @@ def raw_ticks():
             if len(rows) == 1500:
                 break
     # The 60-second label contract needs more than the first 500 ticks in this
-    # capture, which cover only about 40 seconds of event time.
+    # capture; the first 1500 (post-dedupe) cover about 254 seconds of event time.
     assert len(rows) == 1500
     return rows

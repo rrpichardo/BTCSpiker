@@ -64,7 +64,9 @@ export function formatMetric(value, digits = 3) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
 
-export function leadTimeLabel(seconds) {
+// Shared by the Grading lag and Label horizon stats — both are "N seconds",
+// nothing more; only their surrounding label text differs.
+export function formatSeconds(seconds) {
   if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "—";
-  return `${Math.round(seconds)}s ahead`;
+  return `${Math.round(seconds)}s`;
 }

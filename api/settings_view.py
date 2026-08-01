@@ -15,9 +15,19 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import yaml
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
+
+
+class SettingsConfigError(RuntimeError):
+    """A settings source path exists but could not be read as the file it's
+    supposed to be — e.g. a Docker bind mount for a missing host `.env`
+    resolves to an empty directory rather than failing the mount, so
+    `path.exists()` is True but `path.read_text()` raises IsADirectoryError.
+    Deliberately distinct from "file missing" (which returns {} below):
+    a broken mount is a real, fixable configuration problem and must not be
+    silently reported the same as "nothing configured yet"."""
 
 ENV_FILE_DEFAULT = ".env"
 CONFIG_FILE_DEFAULT = "config.yaml"
@@ -136,15 +146,21 @@ def _load_saved_env() -> dict[str, str]:
     path = Path(os.environ.get("SETTINGS_ENV_FILE", ENV_FILE_DEFAULT))
     if not path.exists():
         return {}
-    return _parse_env_file(path)
+    try:
+        return _parse_env_file(path)
+    except OSError as exc:
+        raise SettingsConfigError(f"could not read {path}: {exc}") from exc
 
 
 def _load_saved_features() -> dict:
     path = Path(os.environ.get("SETTINGS_CONFIG_FILE", CONFIG_FILE_DEFAULT))
     if not path.exists():
         return {}
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+    except OSError as exc:
+        raise SettingsConfigError(f"could not read {path}: {exc}") from exc
     if not isinstance(data, Mapping):
         return {}
     features = data.get("features") or {}
@@ -226,8 +242,11 @@ def _build_entry(
 @router.get("/settings")
 def get_settings():
     """Return the fixed settings registry with saved vs active values."""
-    saved_env = _load_saved_env()
-    saved_features = _load_saved_features()
+    try:
+        saved_env = _load_saved_env()
+        saved_features = _load_saved_features()
+    except SettingsConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     active_api_settings = _get_active_api_settings()
     settings = [
         _build_entry(reg, saved_env, saved_features, active_api_settings)

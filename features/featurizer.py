@@ -43,6 +43,7 @@ import signal
 import sys
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -57,6 +58,7 @@ import yaml
 from confluent_kafka import Consumer, KafkaError, Producer
 
 from btcspiker_ml.features import FeatureEngine
+from btcspiker_ml.tick_identity import tick_dedupe_key
 from parquet_sink import AtomicParquetSink
 
 logging.basicConfig(
@@ -125,6 +127,19 @@ class ProductStream:
     replay restart's early feature_ids can't collide with the prior run's.
     """
 
+    # Bounded window of recent (product_id, timestamp, price, best_bid,
+    # best_ask) keys used to catch tick redelivery — a websocket reconnect
+    # replaying its last few messages, or a corrupt capture with the same
+    # tick recorded twice (see the 2026-04-06 duplicated-fixture incident,
+    # which put trade_intensity_60s/n_ticks_60s ~6 sigma off training).
+    # Bounded rather than the immediately-preceding tick only, since
+    # redelivery after a reconnect is not always adjacent; bounded rather
+    # than unbounded, since a looping replay's *next pass* legitimately
+    # re-emits the same ticks and must not be swallowed — the epoch bump on
+    # timestamp regression (below) already fires at exactly that boundary
+    # and clears this window.
+    _DEDUPE_WINDOW = 256
+
     def __init__(self, feature_set_id: str, horizon_sec: float, vol_threshold: float, boot_id: str):
         self.engine        = FeatureEngine(feature_set_id, horizon_sec, vol_threshold)
         self.horizon_sec    = horizon_sec
@@ -135,8 +150,23 @@ class ProductStream:
         self.epoch: int = 0
         self.seq:   int = 0
         self._last_ts: float | None = None
+        self._recent_keys: deque = deque(maxlen=self._DEDUPE_WINDOW)
+        self._recent_keys_set: set = set()
+        self.duplicates_dropped: int = 0
 
-    def ingest(self, tick: dict) -> tuple[dict, list[tuple[dict, dict]]]:
+    def _is_redelivery(self, tick: dict) -> bool:
+        """True if `tick` exactly matches one already seen within the
+        current dedupe window; remembers it either way."""
+        key = tick_dedupe_key(tick)
+        if key in self._recent_keys_set:
+            return True
+        if len(self._recent_keys) == self._recent_keys.maxlen:
+            self._recent_keys_set.discard(self._recent_keys[0])
+        self._recent_keys.append(key)
+        self._recent_keys_set.add(key)
+        return False
+
+    def ingest(self, tick: dict) -> tuple[dict | None, list[tuple[dict, dict]]]:
         """
         Process one tick.
 
@@ -144,7 +174,11 @@ class ProductStream:
         -------
         (feature_row, drained) where:
           feature_row : this tick's unlabeled feature dict, emitted
-                        immediately, stamped with feature_id/stream_epoch.
+                        immediately, stamped with feature_id/stream_epoch —
+                        or None if `tick` is an exact redelivery of one
+                        already seen (see `_is_redelivery`), in which case
+                        no feature_id/seq is consumed and the engine is not
+                        touched.
           drained     : list of (labelled_row, outcome_event) pairs for
                         pending entries whose lookahead window has just
                         closed. labelled_row is the Parquet training row
@@ -159,13 +193,33 @@ class ProductStream:
             )
             self.epoch += 1
             self.seq = 0
+            self._recent_keys.clear()
+            self._recent_keys_set.clear()
         self._last_ts = ts
 
+        if self._is_redelivery(tick):
+            self.duplicates_dropped += 1
+            if self.duplicates_dropped == 1:
+                log.warning(
+                    "Dropping redelivered tick for %s (exact duplicate within "
+                    "the last %d ticks); further drops this boot are counted, "
+                    "not logged individually",
+                    tick.get("product_id", "unknown"), self._DEDUPE_WINDOW,
+                )
+            return None, []
+
         feature_id = f"{tick['product_id']}:{self.boot_id}:{self.epoch}:{self.seq}"
-        row, drained = self.engine.ingest_with_tag(tick, tag=(feature_id, self.epoch))
+        stream_id = f"{self.boot_id}:{self.epoch}"
+        row, drained = self.engine.ingest_with_tag(tick, tag=(feature_id, self.epoch, stream_id))
         self.seq += 1
 
-        feature_row = {**row, "feature_id": feature_id, "stream_epoch": self.epoch}
+        feature_row = {
+            **row,
+            "feature_id": feature_id,
+            "stream_epoch": self.epoch,
+            "stream_id": stream_id,
+            "ingest_mode": tick.get("ingest_mode"),
+        }
         return feature_row, [self._to_outcome(labelled, tag) for labelled, tag in drained]
 
     def drain_remaining(self) -> list[tuple[dict, dict]]:
@@ -174,10 +228,11 @@ class ProductStream:
         return [self._to_outcome(labelled, tag) for labelled, tag in drained]
 
     def _to_outcome(self, labelled: dict, tag: object) -> tuple[dict, dict]:
-        feature_id, epoch = tag
+        feature_id, epoch, stream_id = tag
         outcome_event = {
             "feature_id":     feature_id,
             "stream_epoch":   epoch,
+            "stream_id":      stream_id,
             "product_id":     labelled["product_id"],
             "feature_ts":     labelled["timestamp"],
             "future_vol_60s": labelled["future_vol_60s"],
@@ -357,6 +412,9 @@ def main():
     producer.flush()
     consumer.close()
     sink.close()
+    total_duplicates = sum(state.duplicates_dropped for state in states.values())
+    if total_duplicates:
+        log.warning("Dropped %d redelivered tick(s) this run.", total_duplicates)
     log.info("Featurizer stopped.")
 
 

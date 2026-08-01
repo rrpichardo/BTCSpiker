@@ -51,7 +51,7 @@ export default function PredictionsTable({ predictions, unavailable = false }) {
               <td>{p.model_variant}</td>
               <td>{p.model_version}</td>
               <td>{fmtScientific(p.vol_60s, 6)}</td>
-              <td>{fmtFixed(p.spread_bps, 2)}</td>
+              <td>{fmtScientific(p.spread_bps, 6)}</td>
               <td>{fmtScientific(p.log_return, 6)}</td>
               <td>{fmtFixed(p.trade_intensity_60s, 2)}</td>
             </tr>

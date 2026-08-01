@@ -1,0 +1,72 @@
+{
+  "artifacts": {
+    "features_slice.csv": {
+      "columns": [
+        "product_id",
+        "timestamp",
+        "price",
+        "midprice",
+        "log_return",
+        "spread_abs",
+        "spread_bps",
+        "vol_60s",
+        "mean_return_60s",
+        "n_ticks_60s",
+        "trade_intensity_60s",
+        "spread_mean_60s",
+        "price_range_60s",
+        "future_vol_60s",
+        "vol_spike"
+      ],
+      "rows": 3212,
+      "sha256": "4ebb2714fba9b60ccd66fbdfb4900f8658765cde0c340ceb72f4437a89ff57b4"
+    },
+    "features_slice.parquet": {
+      "columns": [
+        "product_id",
+        "timestamp",
+        "price",
+        "midprice",
+        "log_return",
+        "spread_abs",
+        "spread_bps",
+        "vol_60s",
+        "mean_return_60s",
+        "n_ticks_60s",
+        "trade_intensity_60s",
+        "spread_mean_60s",
+        "price_range_60s",
+        "future_vol_60s",
+        "vol_spike"
+      ],
+      "rows": 3212,
+      "sha256": "19288253e068a00acc8304cb05f97094841f0513584f72827cf40784aec5237c"
+    },
+    "raw_slice.ndjson": {
+      "rows": 3578,
+      "sha256": "e613bc4d452e8d1e8bcdd78906cede1600e3b2fc386ef48dcb31592bc7a6dc8c"
+    },
+    "raw_slice.parquet": {
+      "columns": [
+        "product_id",
+        "price",
+        "best_bid",
+        "best_ask",
+        "volume_24_h",
+        "timestamp"
+      ],
+      "rows": 3578,
+      "sha256": "6bede2b3de6aeac4234cffb8056fb811198604c82a4fbfbfd0b875d03c053d68"
+    }
+  },
+  "class_prevalence": {
+    "vol_spike": 0.25404732254047324
+  },
+  "event_time_bounds": {
+    "end": "2026-04-06T15:12:34.511431653Z",
+    "start": "2026-04-06T15:02:34.590029066Z"
+  },
+  "generated_by": "scripts/regenerate_data_sample.py",
+  "purpose": "Schema/smoke-test fixture for local runs and CI. NOT a training-distribution proxy \u2014 this is a 10-minute slice; the real training reference (784K rows) is not committed to this repo. Do not use features_slice.* as a drift reference or a fallback training corpus.",
+  "source_sha256": "e613bc4d452e8d1e8bcdd78906cede1600e3b2fc386ef48dcb31592bc7a6dc8c"
+}

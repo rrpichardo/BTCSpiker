@@ -36,7 +36,9 @@ export default function SettingsPage() {
         <p className="stale-banner" role="alert">
           {hasResponse
             ? `Settings refresh failed. Showing cached values; ${formatAge(lastUpdated).toLowerCase()}.`
-            : "Settings are unavailable. Check the API service and retry."}
+            : error.status
+              ? `The API service responded with an error (HTTP ${error.status}) while reading settings — this is a server-side problem, not a missing configuration file. Check the api container's logs.`
+              : "Settings are unavailable. Check the API service and retry."}
         </p>
       )}
 

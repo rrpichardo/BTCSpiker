@@ -150,6 +150,52 @@ if MODEL_VARIANT == "ml":
         mlflow_run_id = None
 
 # ---------------------------------------------------------------------------
+# Train/serve skew detection — z-score each incoming feature against the
+# loaded model's own StandardScaler. mean_/scale_ ARE the training
+# distribution, already in-process, and predict_proba computes this exact
+# transform internally — no new data or dependency needed (unlike
+# scripts/drift_report.py, which needs a committed reference dataset; the
+# only one in this repo is a smoke fixture unfit for that role, see
+# handoff/data_sample/manifest.json).
+#
+# 2026-04 incident: a duplicated-tick capture put trade_intensity_60s and
+# n_ticks_60s ~6 sigma off training for an entire run, and nothing surfaced
+# it before it reached the confusion matrix. The default threshold sits
+# below that incident's observed ~5.65 average so a recurrence trips this.
+# ---------------------------------------------------------------------------
+FEATURE_SKEW_Z_THRESHOLD = float(os.getenv("FEATURE_SKEW_Z_THRESHOLD", "4.0"))
+
+
+def _extract_scaler(pipeline, feature_cols: list[str]):
+    """Return (mean_, scale_) from the first pipeline step exposing both,
+    validated against feature_cols' length. None (never raises) if no step
+    qualifies or dimensionality doesn't match -- skew detection degrades to
+    a no-op rather than blocking startup: the non-legacy MLflow load path
+    above has no pickle fallback and would hard-fail on any exception here.
+    """
+    steps = getattr(pipeline, "steps", None)
+    if not steps:
+        return None
+    for _name, step in steps:
+        mean = getattr(step, "mean_", None)
+        scale = getattr(step, "scale_", None)
+        if mean is None or scale is None:
+            continue
+        if len(mean) != len(feature_cols) or len(scale) != len(feature_cols):
+            logger.warning(
+                "Skipping feature-skew telemetry: scaler dimensionality (%d) "
+                "does not match FEATURE_COLS (%d)",
+                len(mean),
+                len(feature_cols),
+            )
+            return None
+        return np.asarray(mean), np.asarray(scale)
+    return None
+
+
+_SCALER_STATS = _extract_scaler(PIPELINE, FEATURE_COLS) if PIPELINE is not None else None
+
+# ---------------------------------------------------------------------------
 # Git SHA (resolved once at startup)
 # ---------------------------------------------------------------------------
 try:
@@ -196,6 +242,23 @@ FEATURE_FRESHNESS = Gauge(
     "feature_freshness_seconds",
     "Seconds between the incoming feature row's timestamp and now",
 )
+# Histogram, not a per-row Gauge: a gauge set in a loop only retains the last
+# row of a batch and can't support a distributional check ("did any row this
+# hour look like the 2026-04 incident") the way a histogram's observed
+# sum/count/buckets can.
+FEATURE_ZSCORE_ABS = Histogram(
+    "feature_zscore_abs",
+    "Absolute z-score of an incoming feature value against the loaded "
+    "model's training-time StandardScaler distribution",
+    ["feature", "model_version"],
+)
+FEATURE_SKEW_ROWS = Counter(
+    "feature_skew_rows_total",
+    f"Rows with |z| >= {FEATURE_SKEW_Z_THRESHOLD} for a given feature against "
+    "the training distribution",
+    ["feature", "model_version"],
+)
+_skew_warned_features: set[str] = set()
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -319,6 +382,33 @@ class VersionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _record_feature_skew(X: np.ndarray) -> None:
+    """Observe |z-score| of each column in `X` against the loaded model's
+    own training-time scaler. No-op if _extract_scaler couldn't find or
+    validate a usable scaler (see its docstring)."""
+    mean, scale = _SCALER_STATS
+    safe_scale = np.where(scale == 0, 1.0, scale)  # a constant training column has scale 0
+    z = np.abs((X - mean) / safe_scale)
+    for col_idx, feature in enumerate(FEATURE_COLS):
+        col_z = z[:, col_idx]
+        for value in col_z:
+            FEATURE_ZSCORE_ABS.labels(feature=feature, model_version=MODEL_VERSION).observe(
+                float(value)
+            )
+        crossed = int((col_z >= FEATURE_SKEW_Z_THRESHOLD).sum())
+        if crossed:
+            FEATURE_SKEW_ROWS.labels(feature=feature, model_version=MODEL_VERSION).inc(crossed)
+            if feature not in _skew_warned_features:
+                _skew_warned_features.add(feature)
+                logger.warning(
+                    "feature_skew: %r crossed |z| >= %.1f (observed max %.3g, training mean %.3g)",
+                    feature,
+                    FEATURE_SKEW_Z_THRESHOLD,
+                    float(col_z.max()),
+                    float(mean[col_idx]),
+                )
+
+
 def _score_ml(rows: list[TickRow]) -> list[float]:
     matrices = []
     for row in rows:
@@ -331,6 +421,8 @@ def _score_ml(rows: list[TickRow]) -> list[float]:
             )
         matrices.append([payload[column] for column in FEATURE_COLS])
     X = np.array(matrices)
+    if _SCALER_STATS is not None:
+        _record_feature_skew(X)
     y_prob = PIPELINE.predict_proba(X)[:, 1]
     return [round(float(p), 6) for p in y_prob]
 

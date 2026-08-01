@@ -23,6 +23,12 @@ from pathlib import Path
 
 from confluent_kafka import Producer
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from btcspiker_ml.tick_identity import tick_dedupe_key
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -82,10 +88,30 @@ def replay(path: Path, speed: float, loop: bool, stop: dict) -> int:
     while not stop["flag"]:
         pass_num += 1
         with open(path) as f:
-            lines = [ln.strip() for ln in f if ln.strip()]
-        if not lines:
+            raw_lines = [ln.strip() for ln in f if ln.strip()]
+        if not raw_lines:
             log.error("no ticks in %s", path)
             return 0
+
+        # Drop exact-duplicate ticks within this pass — a corrupt capture
+        # (every tick recorded twice) must not double the featurizer's
+        # trade_intensity_60s/n_ticks_60s inputs. Scoped per pass, not across
+        # loop wraps: a `--loop` re-emitting the same file on its next pass is
+        # the intended replay, not redelivery.
+        seen: set = set()
+        lines = []
+        skipped = 0
+        for line in raw_lines:
+            key = tick_dedupe_key(json.loads(line))
+            if key in seen:
+                skipped += 1
+                continue
+            seen.add(key)
+            lines.append(line)
+        if skipped:
+            log.warning(
+                "pass %d: skipped %d duplicate tick(s) in %s", pass_num, skipped, path
+            )
 
         first_ts = parse_ts(json.loads(lines[0])["timestamp"])
         wall_start = time.monotonic()
@@ -99,10 +125,14 @@ def replay(path: Path, speed: float, loop: bool, stop: dict) -> int:
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
+            # Stamped here, not inferred downstream from timing — replay is
+            # the only place that knows with certainty this tick did not
+            # come from the live exchange feed.
+            tick["ingest_mode"] = "replay"
             producer.produce(
                 TOPIC,
                 key=tick.get("product_id", "BTC-USD"),
-                value=line,
+                value=json.dumps(tick),
                 callback=_delivery,
             )
             producer.poll(0)

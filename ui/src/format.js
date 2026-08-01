@@ -29,6 +29,19 @@ export function ageMs(value) {
   return Math.max(0, Date.now() - date.getTime());
 }
 
+// Provenance (where the data came from) and freshness (whether polling is
+// current) are independent facts — a feed can be "Live" (actively polling,
+// getting fresh responses) while every row it's polling is replayed
+// historical data, which is exactly what produced the 2026-04-06
+// duplicated-fixture incident: the connection-status badge correctly read
+// "Live" while the underlying market data was a 10-minute loop from days
+// earlier. This never collapses the two into one label.
+export function formatProvenance(ingestMode) {
+  if (ingestMode === "live") return "Live market data";
+  if (ingestMode === "replay") return "Replay data";
+  return "Unknown data source";
+}
+
 export function formatAge(value) {
   const elapsed = ageMs(value);
   if (elapsed === null) return "Awaiting first response";

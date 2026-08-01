@@ -32,6 +32,7 @@ import pyarrow as pa
 import yaml
 
 from btcspiker_ml.features import FeatureEngine, parse_timestamp
+from btcspiker_ml.tick_identity import tick_dedupe_key
 from parquet_sink import AtomicParquetSink
 
 logging.basicConfig(
@@ -141,14 +142,7 @@ def iter_ticks(raw_inputs: list[str]):
 
     while heap:
         ts, idx, tick = heapq.heappop(heap)
-        dedupe_key = (
-            tick.get("product_id"),
-            tick.get("timestamp"),
-            tick.get("price"),
-            tick.get("best_bid"),
-            tick.get("best_ask"),
-            tick.get("volume_24_h"),
-        )
+        dedupe_key = tick_dedupe_key(tick)
         if current_ts != ts:
             current_ts = ts
             seen_for_ts.clear()

@@ -4,7 +4,7 @@ import { fetchRecentPredictions, fetchPredictionsHealth, fetchTimeline } from ".
 import { buildTimelinePoints, rangeToWindow, RANGE_OPTIONS } from "../timelineData.js";
 import TimelineCharts from "../components/TimelineCharts.jsx";
 import PredictionsTable from "../components/PredictionsTable.jsx";
-import { ageMs, formatAge, formatDateTime } from "../format.js";
+import { ageMs, formatAge, formatDateTime, formatProvenance } from "../format.js";
 
 const STALE_MS = 60 * 1000;
 const RESPONSE_STALE_MS = 10 * 1000;
@@ -71,6 +71,16 @@ export default function PredictionsPage() {
           <p className="page-header-note">
             2-second materializer polling · newest Bitcoin volatility signals first
           </p>
+          {latest && (
+            <p className="page-header-note">
+              <span className={`pill ${latest.ingest_mode === "replay" ? "pill-amber" : "pill-gray"}`}>
+                {formatProvenance(latest.ingest_mode)}
+              </span>
+              {latest.ingest_mode === "replay" && latest.feature_ts && (
+                <> · data captured {formatDateTime(latest.feature_ts)}</>
+              )}
+            </p>
+          )}
         </div>
         <div
           className={`feed-state ${stale ? "feed-state-degraded" : ""}`}

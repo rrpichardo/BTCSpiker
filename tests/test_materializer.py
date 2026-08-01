@@ -1061,6 +1061,18 @@ def test_outcomes_dedup_insert_twice_yields_one_row(tmp_path):
     assert rows[0][0] == "BTC-USD:1:1"
 
 
+def test_outcome_stream_id_round_trips_through_insert(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    event = _outcome_event("BTC-USD:1:1", stream_id="boot1:0")
+
+    assert materializer.insert_outcomes(conn, [event]) == 1
+
+    row = conn.execute(
+        "SELECT stream_id FROM outcomes WHERE feature_id = 'BTC-USD:1:1'"
+    ).fetchone()
+    assert row == ("boot1:0",)
+
+
 def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
     db_path = tmp_path / "old_schema.db"
     # Build a DB with the OLD predictions schema (no feature_id/stream_epoch/
@@ -1096,19 +1108,73 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
 
     conn = materializer.init_db(db_path)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
-    assert {"feature_id", "stream_epoch", "tau", "run_id", "market_price"} <= columns
+    assert {
+        "feature_id", "stream_epoch", "tau", "run_id", "market_price",
+        "stream_id", "ingest_mode", "product_id",
+    } <= columns
 
     row = conn.execute(
-        "SELECT event_id, feature_id, tau, market_price FROM predictions "
-        "WHERE event_id = 'old1'"
+        "SELECT event_id, feature_id, tau, market_price, stream_id, ingest_mode "
+        "FROM predictions WHERE event_id = 'old1'"
     ).fetchone()
-    assert row == ("old1", None, None, None)
+    assert row == ("old1", None, None, None, None, None)
     conn.close()
 
     # A second init_db call on the now-migrated DB must not error.
     conn2 = materializer.init_db(db_path)
     columns2 = {row[1] for row in conn2.execute("PRAGMA table_info(predictions)")}
-    assert {"feature_id", "stream_epoch", "tau", "run_id", "market_price"} <= columns2
+    assert {
+        "feature_id", "stream_epoch", "tau", "run_id", "market_price",
+        "stream_id", "ingest_mode", "product_id",
+    } <= columns2
+    conn2.close()
+
+
+def test_outcomes_alter_migration_adds_stream_id_and_preserves_data(tmp_path):
+    db_path = tmp_path / "old_outcomes_schema.db"
+    # Build a DB with the OLD outcomes schema (no stream_id) to exercise the
+    # ALTER TABLE migration path. Regression guard for the trap where editing
+    # OUTCOMES_SCHEMA_SQL alone does nothing to an already-deployed DB, since
+    # CREATE TABLE IF NOT EXISTS is a no-op once the table exists -- only an
+    # explicit _ensure_columns(conn, "outcomes", ...) call migrates it.
+    raw = sqlite3.connect(str(db_path))
+    raw.execute(
+        """
+        CREATE TABLE outcomes (
+            feature_id TEXT PRIMARY KEY,
+            stream_epoch INT,
+            product_id TEXT,
+            feature_ts TEXT,
+            future_vol_60s REAL,
+            vol_spike INT,
+            label_schema TEXT,
+            written_at TEXT
+        )
+        """
+    )
+    raw.execute(
+        "INSERT INTO outcomes (feature_id, stream_epoch, product_id, feature_ts, "
+        "future_vol_60s, vol_spike, label_schema, written_at) VALUES "
+        "('old-outcome-1', 0, 'BTC-USD', '2026-07-16T19:00:00Z', 0.0001, 0, "
+        "'p85-60s-0.000048-v1', '2026-07-16T19:01:00Z')"
+    )
+    raw.commit()
+    raw.close()
+
+    conn = materializer.init_db(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(outcomes)")}
+    assert "stream_id" in columns
+
+    row = conn.execute(
+        "SELECT feature_id, stream_id FROM outcomes WHERE feature_id = 'old-outcome-1'"
+    ).fetchone()
+    assert row == ("old-outcome-1", None)
+    conn.close()
+
+    # A second init_db call on the now-migrated DB must not error.
+    conn2 = materializer.init_db(db_path)
+    columns2 = {row[1] for row in conn2.execute("PRAGMA table_info(outcomes)")}
+    assert "stream_id" in columns2
     conn2.close()
 
 
@@ -1120,6 +1186,33 @@ def test_market_price_round_trips_through_insert_and_recent(tmp_path):
 
     rows = materializer.recent(conn, 10)
     assert rows[0]["market_price"] == 65432.1
+
+
+def test_lineage_fields_round_trip_through_insert_and_recent(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    event = _event(
+        "ticks.features:0:1", 1,
+        stream_id="boot1:0", ingest_mode="replay", product_id="BTC-USD",
+    )
+
+    assert materializer.insert_events(conn, [event]) == 1
+
+    rows = materializer.recent(conn, 10)
+    assert rows[0]["stream_id"] == "boot1:0"
+    assert rows[0]["ingest_mode"] == "replay"
+    assert rows[0]["product_id"] == "BTC-USD"
+
+
+def test_lineage_fields_default_to_null_for_old_format_events(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    event = _event("ticks.features:0:1", 1)  # no stream_id/ingest_mode/product_id
+
+    assert materializer.insert_events(conn, [event]) == 1
+
+    rows = materializer.recent(conn, 10)
+    assert rows[0]["stream_id"] is None
+    assert rows[0]["ingest_mode"] is None
+    assert rows[0]["product_id"] is None
 
 
 def test_performance_unmatched_outcomes_query_uses_index_not_full_scan(tmp_path):

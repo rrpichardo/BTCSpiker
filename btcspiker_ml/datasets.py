@@ -25,6 +25,15 @@ REQUIRED_FEATURE_COLUMNS = {
 TARGET_COLUMN = "vol_spike"
 TIMESTAMP_COLUMN = "timestamp"
 
+# Mirrors evaluation.py's MIN_POSITIVES: below this many examples of a class,
+# a temporal split (btcspiker_ml.splits.make_temporal_splits) can't reliably
+# keep both classes in every fold's train AND validation slice, so a corpus
+# this thin can only fail confusingly several layers downstream rather than
+# being rejected here at bind time. This does not replace make_temporal_splits'
+# own per-fold class check -- it's a fast pre-check against the corpus as a
+# whole, not a guarantee any specific fold plan will succeed.
+MIN_CLASS_COUNT = 10
+
 
 @dataclass(frozen=True)
 class ExistingDataset:
@@ -46,6 +55,12 @@ def resolve_existing_dataset(configured: Path | None) -> Path:
 
     Precedence: BTCSPIKER_EXISTING_DATA env var, explicit config, project default,
     checked-in handoff sample. Never fabricates data — raises if none exist.
+
+    The handoff sample fallback resolves to a path, not a guarantee it's
+    usable — inspect_existing_dataset is what rejects a corpus too small or
+    too class-imbalanced to support a temporal split (MIN_CLASS_COUNT), which
+    is what actually matters here: this function only answers "does a file
+    exist", never "is it a fit training corpus".
     """
     candidates: list[Path | None] = [
         Path(os.environ["BTCSPIKER_EXISTING_DATA"]) if os.environ.get("BTCSPIKER_EXISTING_DATA") else None,
@@ -121,6 +136,28 @@ def inspect_existing_dataset(path: Path) -> ExistingDataset:
         raise ValueError(
             f"target column {TARGET_COLUMN!r} is not binary in {path}: "
             f"observed values {sorted(unique_targets)}"
+        )
+    if unique_targets != {0, 1}:
+        # A corpus corrupted upstream (e.g. duplicated ticks halving realised
+        # volatility, see handoff/data_sample/manifest.json) can collapse to
+        # a single class while still passing the binary check above -- this
+        # is what let a 0%-positive corpus silently become a tournament
+        # dataset. Caught here rather than several layers downstream where
+        # make_temporal_splits would fail with a fold-shaped error that
+        # doesn't point back at the corpus itself.
+        raise ValueError(
+            f"target column {TARGET_COLUMN!r} in {path} contains only class(es) "
+            f"{sorted(unique_targets)} — both 0 and 1 must be present; a "
+            "single-class corpus cannot support a temporal validation split"
+        )
+
+    class_counts = target.value_counts()
+    undersized = {int(k): int(v) for k, v in class_counts.items() if v < MIN_CLASS_COUNT}
+    if undersized:
+        raise ValueError(
+            f"target column {TARGET_COLUMN!r} in {path} has too few examples of "
+            f"class(es) {undersized} (minimum {MIN_CLASS_COUNT} per class) — too "
+            "small to reliably support a temporal validation split"
         )
 
     lineage_path = path.with_suffix(path.suffix + ".lineage.json")

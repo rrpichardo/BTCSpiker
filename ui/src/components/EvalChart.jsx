@@ -27,7 +27,7 @@ function timeLabel(timestamp) {
 // Score-over-time chart for the active grading mode. Score is always
 // plotted; actual-spike shading, the alert threshold, and the baseline
 // score are independent toggles layered on top.
-export default function EvalChart({ chartData, outcomeKey, tau }) {
+export default function EvalChart({ chartData, outcomeKey, tau, tauSource }) {
   const [showBands, setShowBands] = useState(true);
   const [showTau, setShowTau] = useState(true);
   const [showBaseline, setShowBaseline] = useState(true);
@@ -39,6 +39,16 @@ export default function EvalChart({ chartData, outcomeKey, tau }) {
   );
 
   const hasTau = showTau && typeof tau === "number" && Number.isFinite(tau);
+  // tau_source distinguishes "this is the deployed model's own shipped
+  // threshold" from "no row in this window carried a tau, so a hardcoded
+  // fallback constant was substituted" — the two are otherwise visually
+  // identical (the fallback happens to round to the same 3 decimals as a
+  // real model tau in this deployment), so the UI must say which one this is
+  // rather than asserting model provenance unconditionally.
+  const tauIsFallback = tauSource === "fallback";
+  const tauInfo = tauIsFallback
+    ? "Scores above this line count as spike alerts. No row in this window carried a model-shipped threshold, so a fallback default is shown — it may not match the deployed model's actual decision boundary."
+    : "Scores above this line count as spike alerts. This value ships with the deployed model.";
   const summary = `Score chart with ${chartData.length} graded points.`;
 
   return (
@@ -64,8 +74,8 @@ export default function EvalChart({ chartData, outcomeKey, tau }) {
             disabled={typeof tau !== "number"}
             onChange={(event) => setShowTau(event.target.checked)}
           />
-          Alert threshold τ
-          <InfoIcon label="Scores above this line count as spike alerts. This value ships with the deployed model." />
+          Alert threshold τ{hasTau && tauIsFallback ? " (fallback)" : ""}
+          <InfoIcon label={tauInfo} />
         </label>
         <label className="eval-toggle">
           <input
@@ -119,7 +129,7 @@ export default function EvalChart({ chartData, outcomeKey, tau }) {
                 stroke="var(--amber)"
                 strokeDasharray="5 4"
                 label={{
-                  value: `τ ${tau.toFixed(3)}`,
+                  value: `τ ${tau.toFixed(3)}${tauIsFallback ? " (fallback)" : ""}`,
                   position: "right",
                   fill: "var(--amber)",
                   fontSize: 10,

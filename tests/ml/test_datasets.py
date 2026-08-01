@@ -103,6 +103,45 @@ def test_inspection_rejects_non_binary_target(tmp_path: Path):
         inspect_existing_dataset(path)
 
 
+def test_inspection_rejects_single_class_target(tmp_path: Path):
+    # The exact failure mode a duplicated-tick capture produced: every label
+    # collapses to one class while still being a subset of {0, 1}, so the
+    # binary check alone doesn't catch it.
+    df = pd.read_parquet(HANDOFF_SAMPLE.resolve()).copy()
+    df["vol_spike"] = 0
+    path = tmp_path / "single_class.parquet"
+    df.to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="both 0 and 1 must be present"):
+        inspect_existing_dataset(path)
+
+
+def test_inspection_rejects_undersized_minority_class(tmp_path: Path):
+    from btcspiker_ml.datasets import MIN_CLASS_COUNT
+
+    df = pd.read_parquet(HANDOFF_SAMPLE.resolve()).copy()
+    df["vol_spike"] = 0
+    df.loc[df.index[: MIN_CLASS_COUNT - 1], "vol_spike"] = 1  # below the minimum
+    path = tmp_path / "undersized.parquet"
+    df.to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="too few examples"):
+        inspect_existing_dataset(path)
+
+
+def test_inspection_accepts_target_at_exactly_the_minimum_class_count(tmp_path: Path):
+    from btcspiker_ml.datasets import MIN_CLASS_COUNT
+
+    df = pd.read_parquet(HANDOFF_SAMPLE.resolve()).copy()
+    df["vol_spike"] = 0
+    df.loc[df.index[:MIN_CLASS_COUNT], "vol_spike"] = 1  # exactly the minimum
+    path = tmp_path / "at_minimum.parquet"
+    df.to_parquet(path, index=False)
+
+    dataset = inspect_existing_dataset(path)  # must not raise
+    assert dataset.rows > 0
+
+
 def test_publish_manifest_writes_json_and_returns_id(tmp_path: Path):
     dataset = inspect_existing_dataset(HANDOFF_SAMPLE.resolve())
     artifact_root = tmp_path / "artifacts"

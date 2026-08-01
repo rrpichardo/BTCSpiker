@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildTimelinePoints, rangeToWindow, classBands } from "./timelineData.js";
+import {
+  buildTimelinePoints,
+  rangeToWindow,
+  classBands,
+  priceTickLabel,
+  priceTickAxisWidth,
+} from "./timelineData.js";
 
 test("buildTimelinePoints keys on feature_ts, ignoring api_ts entirely", () => {
   const points = buildTimelinePoints([
@@ -124,4 +130,27 @@ test("classBands (re-exported outcomeBands) merges consecutive flagged points in
   assert.deepEqual(bands, [
     { x1: Date.parse("2026-07-16T19:00:01Z"), x2: Date.parse("2026-07-16T19:00:02Z") },
   ]);
+});
+
+test("priceTickLabel produces five distinct labels for a tight real-world domain", () => {
+  // The exact defect observed: five recharts auto-ticks over a 5-minute
+  // window (BTC moving tens of dollars) all rounded to "$70k".
+  const values = [69800, 69900, 70000, 70100, 70200];
+  const domainSpan = Math.max(...values) - Math.min(...values); // 400
+
+  const labels = values.map((v) => priceTickLabel(v, domainSpan));
+
+  assert.equal(new Set(labels).size, 5, `expected 5 distinct labels, got ${labels}`);
+});
+
+test("priceTickLabel falls back to the coarse $Xk form over a wide domain", () => {
+  const domainSpan = 8000; // a multi-hour range with a real four-figure swing
+  assert.equal(priceTickLabel(69000, domainSpan), "$69k");
+  assert.equal(priceTickLabel(70000, domainSpan), "$70k");
+});
+
+test("priceTickAxisWidth widens as priceTickLabel's precision increases", () => {
+  const wide = priceTickAxisWidth(8000);
+  const narrow = priceTickAxisWidth(50);
+  assert.ok(narrow > wide, `expected a tighter domain to need more width (${narrow} > ${wide})`);
 });
