@@ -149,6 +149,14 @@ PROGRESS_HANDLER_OPS = 10_000
 # product_id are newer, nullable fields (added via ALTER TABLE migration
 # below) — old rows simply carry null for them, which makes them ungradeable
 # (or price-less, or of unknown lineage) rather than wrong.
+#
+# mean_return_60s/n_ticks_60s/spread_mean_60s complete the model's seven-
+# feature contract (api/main.py FEATURE_COLS_DEFAULT). The log previously
+# recorded only four of the seven, so the exact input a given score was
+# produced from could not be reconstructed after the fact — which is what
+# made the 2026-04 duplicated-tick incident (n_ticks_60s ~6 sigma off
+# training) invisible in the read model. Also nullable: pre-migration rows
+# carry null rather than a fabricated value.
 EVENT_FIELDS = [
     "event_id",
     "source_partition",
@@ -170,6 +178,9 @@ EVENT_FIELDS = [
     "stream_id",
     "ingest_mode",
     "product_id",
+    "mean_return_60s",
+    "n_ticks_60s",
+    "spread_mean_60s",
 ]
 
 # Columns added after the original predictions table shipped; migrated in
@@ -189,6 +200,10 @@ PREDICTIONS_MIGRATED_COLUMNS = [
     ("stream_id", "TEXT"),
     ("ingest_mode", "TEXT"),
     ("product_id", "TEXT"),
+    # The three model features the log never carried; see EVENT_FIELDS.
+    ("mean_return_60s", "REAL"),
+    ("n_ticks_60s", "REAL"),
+    ("spread_mean_60s", "REAL"),
 ]
 
 SCHEMA_SQL = """
@@ -321,6 +336,32 @@ FROM predictions p
 LEFT JOIN outcomes o ON p.feature_id = o.feature_id
 WHERE p.feature_ts >= ? AND p.feature_ts < ? AND p.stream_id IS ?
 ORDER BY p.feature_ts ASC
+"""
+
+# NEWEST_ORDER_SQL's column references are unqualified, and `feature_ts`
+# exists on BOTH sides of this join -- reusing it verbatim here would be an
+# ambiguous reference. Prefixed with p. so the ordering is unambiguously the
+# prediction's own, identical in every other respect.
+NEWEST_ORDER_JOINED_SQL = """
+ORDER BY
+    julianday(COALESCE(p.api_ts, p.feature_ts)) DESC,
+    p.source_partition DESC,
+    p.source_offset DESC,
+    p.event_id ASC
+"""
+
+# Same join again, newest-first and segment-scoped, for /predictions/recent.
+# The endpoint previously read predictions alone, so the one view that is
+# literally a list of predictions was the only view that could not say
+# whether any of them turned out to be right -- while the timeline and the
+# metrics, built from this same join, could.
+RECENT_JOIN_SQL = f"""
+SELECT {', '.join(PERFORMANCE_JOIN_FIELDS)}
+FROM predictions p
+LEFT JOIN outcomes o ON p.feature_id = o.feature_id
+WHERE p.stream_id IS ?
+{NEWEST_ORDER_JOINED_SQL}
+LIMIT ?
 """
 
 
@@ -621,6 +662,54 @@ def recent(path_or_conn: str | Path | sqlite3.Connection, limit: int) -> list[di
         return _recent_rows(conn, limit)
     finally:
         conn.close()
+
+
+def _recent_joined_rows(
+    conn: sqlite3.Connection, limit: int, stream_id: str | None
+) -> list[dict]:
+    cur = conn.execute(RECENT_JOIN_SQL, (stream_id, limit))
+    columns = [d[0] for d in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def recent_joined(
+    path_or_conn: str | Path | sqlite3.Connection, limit: int
+) -> list[dict]:
+    """Return up to `limit` predictions, newest first, each carrying the
+    outcome it actually produced (`outcome`) plus the realized volatility
+    behind that verdict (`future_vol_60s`).
+
+    Scoped to the active ingest segment and classified by
+    `timeline.classify_row` against `_newest_predictions_feature_ts` -- the
+    SAME segment and the SAME maturity anchor /predictions/timeline uses, so
+    the event table and the chart can never disagree about whether a given
+    row is pending, gradeable, or a correct call. Anchoring on wall-clock
+    `now` here instead would make replayed data (whose feature_ts lags real
+    time by hours) classify every row "unavailable" in the table while the
+    chart showed it correctly.
+    """
+    if isinstance(path_or_conn, sqlite3.Connection):
+        return _classify_recent(path_or_conn, limit)
+
+    conn = _open_readonly(path_or_conn)
+    try:
+        return _classify_recent(conn, limit)
+    finally:
+        conn.close()
+
+
+def _classify_recent(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    stream_id = _current_stream_segment(conn)
+    anchor_dt = _parse_iso(_newest_predictions_feature_ts(conn, stream_id))
+    rows = _recent_joined_rows(conn, limit, stream_id)
+    for row in rows:
+        row["outcome"] = timeline.classify_row(row, anchor_dt)
+        # written_at/label_schema are grading plumbing, not something the
+        # event table has any use for; `outcome` is the whole of what they
+        # were joined in to produce.
+        row.pop("written_at", None)
+        row.pop("label_schema", None)
+    return rows
 
 
 def _rows_total(path: str | Path) -> tuple[int, bool]:
@@ -1716,7 +1805,7 @@ def get_recent(limit: int = 200):
         raise HTTPException(status_code=503, detail="materializer is not ready")
     request_start = time.monotonic()
     try:
-        rows = recent(PREDICTIONS_DB_PATH, limit)
+        rows = recent_joined(PREDICTIONS_DB_PATH, limit)
     except sqlite3.DatabaseError as exc:
         _log_read_timeout_throttled(
             exc, elapsed_ms=(time.monotonic() - request_start) * 1000, limit=limit

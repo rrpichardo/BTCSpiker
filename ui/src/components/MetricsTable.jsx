@@ -4,30 +4,33 @@ import InfoIcon from "./InfoIcon.jsx";
 // Metric rows shown for every series column. `refKey` names the field on
 // reference.ml that feeds the two training-benchmark columns — most rows
 // have no training-time equivalent in the payload, so they show "—" there.
+// Plain-language name first, technical name kept in parentheses: the numbers
+// are unchanged and still comparable to the training benchmarks, but the row
+// should be readable by someone who has never seen "PR-AUC" before.
 const METRIC_ROWS = [
   {
     key: "pr_auc",
-    label: "PR-AUC",
+    label: "Ranking quality (PR-AUC)",
     refKey: "pr_auc",
-    info: "Ranking quality for rare events — the headline metric here. Higher = the model's most confident moments really were the spikes.",
+    info: "The headline metric. Higher means the moments the model was most confident about really were the spikes. Judged on ranking, so it doesn't depend on where the alert threshold sits.",
   },
   {
     key: "precision",
-    label: "Precision@τ",
+    label: "When it alerted, how often it was right (Precision@τ)",
     refKey: null,
-    info: "When it alerted, how often a spike really followed.",
+    info: "Of all the times the model raised an alert, the share where a spike really followed.",
   },
   {
     key: "recall",
-    label: "Recall@τ",
+    label: "Of real spikes, how many it caught (Recall@τ)",
     refKey: null,
-    info: "Of the real spikes, how many it caught.",
+    info: "Of all the spikes that actually happened, the share the model alerted on.",
   },
   {
     key: "f1",
-    label: "F1@τ",
+    label: "Balance of those two (F1@τ)",
     refKey: "f1",
-    info: "Balance of the two.",
+    info: "A single score combining the two above. Useful because you can always make one look good by sacrificing the other.",
   },
 ];
 
@@ -99,8 +102,8 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
             ))}
             <tr>
               <th scope="row">
-                True / False alerts{" "}
-                <InfoIcon label="Predictions the model flagged as spikes: true positives / false positives." />
+                Alerts: right / wrong{" "}
+                <InfoIcon label="Of the predictions the model flagged as spikes, how many were followed by a real spike and how many weren't (true positives / false positives)." />
               </th>
               {series.map((s) => (
                 <td key={s.name}>
@@ -112,8 +115,8 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
             </tr>
             <tr>
               <th scope="row">
-                Missed / Correct-quiet{" "}
-                <InfoIcon label="Real spikes the model missed / calm periods it correctly left quiet." />
+                Spikes missed / calm called right{" "}
+                <InfoIcon label="Real spikes the model stayed quiet through, and calm stretches it correctly left alone (false negatives / true negatives)." />
               </th>
               {series.map((s) => (
                 <td key={s.name}>
@@ -125,8 +128,8 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
             </tr>
             <tr>
               <th scope="row">
-                Spike rate{" "}
-                <InfoIcon label="A single window-level fact (not measured per series): how often real spikes occurred in this window." />
+                How often spikes actually happened{" "}
+                <InfoIcon label="A single window-level fact about the market, not a measure of any model: the share of graded moments that were real spikes. A model has to beat this to be worth anything." />
               </th>
               <td colSpan={series.length || 1}>{formatMetric(baseRate)}</td>
               <td className={refCellClass}>—</td>

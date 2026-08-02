@@ -186,6 +186,11 @@ def _build_prediction_event(
     alongside this feature row (row["price"]); it's market context for the
     timeline view, not a model feature, and old messages that predate it
     fall back to null.
+
+    All seven model features are carried, not just the four the event
+    originally shipped: without mean_return_60s/n_ticks_60s/spread_mean_60s
+    the read model cannot reconstruct the input a given score came from,
+    which is exactly what hid the 2026-04 duplicated-tick skew.
     """
     return {
         "event_id": f"{msg.topic()}:{msg.partition()}:{msg.offset()}",
@@ -207,6 +212,9 @@ def _build_prediction_event(
         "spread_bps": row.get("spread_bps"),
         "log_return": row.get("log_return"),
         "trade_intensity_60s": row.get("trade_intensity_60s"),
+        "mean_return_60s": row.get("mean_return_60s"),
+        "n_ticks_60s": row.get("n_ticks_60s"),
+        "spread_mean_60s": row.get("spread_mean_60s"),
         "market_price": row.get("price"),
     }
 

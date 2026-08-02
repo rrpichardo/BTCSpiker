@@ -44,11 +44,25 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
   const summaryId = useId();
   const domain = useMemo(() => [Date.parse(from), Date.parse(to)], [from, to]);
 
-  const priceDomainSpan = useMemo(() => {
-    const prices = points.map((p) => p.price).filter((v) => typeof v === "number");
-    return prices.length >= 2 ? Math.max(...prices) - Math.min(...prices) : 0;
-  }, [points]);
+  const prices = useMemo(
+    () => points.map((p) => p.price).filter((v) => typeof v === "number"),
+    [points],
+  );
+  const priceDomainSpan = prices.length >= 2 ? Math.max(...prices) - Math.min(...prices) : 0;
   const priceAxisWidth = priceTickAxisWidth(priceDomainSpan);
+  // market_price is a nullable migrated column, so a whole window can legitimately
+  // carry no price at all. Rendering a Line over all-nulls draws an empty axis
+  // with no line and no explanation, which reads as a broken chart rather than
+  // as absent data -- say so instead.
+  const hasPrice = prices.length > 0;
+
+  // A count, not a mystery: ungradeable stretches are shaded, and without a
+  // number next to them there's no way to tell "a couple of rows" from "most
+  // of this window".
+  const ungradeableCount = useMemo(
+    () => points.filter((p) => p.unavailable).length,
+    [points],
+  );
 
   const predictedBands = useMemo(() => classBands(points, "predicted"), [points]);
   const confirmedBands = useMemo(() => classBands(points, "confirmedSpike"), [points]);
@@ -76,6 +90,13 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
         <p className="eyebrow" id="timeline-price-heading">
           BTC price
         </p>
+        {!hasPrice ? (
+          <p className="state-message">
+            No price recorded for this stretch of data. Price capture was added after
+            these events were logged, so the model's scores below are still valid —
+            there's just nothing to plot alongside them.
+          </p>
+        ) : (
         <div className="score-chart-visual" role="img" aria-label="BTC price over the selected range">
           <ResponsiveContainer width="100%" height={160}>
             <LineChart data={points} syncId="timeline" margin={CHART_MARGIN}>
@@ -117,6 +138,7 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
             </LineChart>
           </ResponsiveContainer>
         </div>
+        )}
       </figure>
 
       <figure className="score-chart timeline-chart-prediction" aria-labelledby="timeline-prediction-heading">
@@ -224,11 +246,31 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
       <p className="panel-meta timeline-legend">
         <span style={{ color: "var(--green)" }}>■</span> BTC price ·{" "}
         <span style={{ color: "var(--accent)" }}>■</span> Score ·{" "}
-        <span style={{ color: "var(--amber)" }}>■</span> Threshold τ ·{" "}
-        <span style={{ color: "var(--accent)" }}>▨</span> Predicted ·{" "}
-        <span style={{ color: "var(--green)" }}>▨</span> Confirmed spike ·{" "}
-        <span style={{ color: "var(--gray)" }}>▨</span> Pending ·{" "}
-        <span style={{ color: "var(--red)" }}>▨</span> Unavailable
+        <span style={{ color: "var(--amber)" }}>■</span> Alert threshold ·{" "}
+        <span style={{ color: "var(--accent)" }}>▨</span> Model alerted ·{" "}
+        <span style={{ color: "var(--green)" }}>▨</span> Spike really happened ·{" "}
+        <span style={{ color: "var(--gray)" }}>▨</span> Waiting for the 60s result ·{" "}
+        <span style={{ color: "var(--red)" }}>▨</span> Not gradeable
+      </p>
+
+      <p className="panel-meta timeline-howto">
+        <strong>How to read this:</strong> the blue line is the model's confidence;
+        when it crosses the dashed threshold the model is alerting, and that stretch
+        shades blue. Green shading is where a spike genuinely happened. Blue over
+        green means it called it right; blue with no green underneath was a false
+        alarm; green with no blue was a miss.
+        {ungradeableCount > 0 && (
+          <>
+            {" "}
+            <span className="timeline-howto-count">
+              {ungradeableCount} of {points.length}{" "}
+              {points.length === 1 ? "point is" : "points are"} shaded red — those
+              can't be honestly graded (the outcome never arrived, or the score
+              landed after the answer was already known), so they're excluded from
+              the metrics rather than guessed at.
+            </span>
+          </>
+        )}
       </p>
     </div>
   );

@@ -540,6 +540,258 @@ def test_recent_respects_limit(tmp_path):
     assert [r["source_offset"] for r in rows] == [4, 3]
 
 
+# ---------------------------------------------------------------------------
+# recent_joined() -- /predictions/recent carrying each prediction's outcome
+# ---------------------------------------------------------------------------
+
+
+def _outcome_row(conn, feature_id, feature_ts, written_at, vol_spike):
+    conn.execute(
+        materializer.INSERT_OUTCOME_SQL,
+        (
+            feature_id,
+            0,
+            "BTC-USD",
+            feature_ts,
+            0.0002,
+            vol_spike,
+            "vol_spike_v1",
+            None,
+            written_at,
+        ),
+    )
+
+
+def _graded_event(event_id, offset, feature_ts, score, **overrides):
+    return _event(
+        event_id,
+        offset,
+        feature_ts=feature_ts,
+        api_ts=overrides.pop("api_ts", None) or f"{feature_ts[:-1]}.500000+00:00",
+        feature_id=event_id,
+        score=score,
+        tau=0.7,
+        **overrides,
+    )
+
+
+def test_recent_joined_labels_each_prediction_with_its_real_outcome(tmp_path):
+    """The event table must be able to say whether each call was right --
+    the whole reason /predictions/recent joins outcomes at all."""
+    conn = materializer.init_db(tmp_path / "test.db")
+    base = "2026-07-16T19:0{}:00Z"
+    materializer.insert_events(
+        conn,
+        [
+            # alerted (score >= tau) and a spike followed
+            _graded_event("correct_call", 1, base.format(0), 0.92),
+            # alerted, no spike
+            _graded_event("false_alarm", 2, base.format(1), 0.88),
+            # stayed quiet, spike happened anyway
+            _graded_event("missed_spike", 3, base.format(2), 0.30),
+            # stayed quiet, market stayed calm
+            _graded_event("correct_quiet", 4, base.format(3), 0.10),
+        ],
+    )
+    for fid, spike in [
+        ("correct_call", 1),
+        ("false_alarm", 0),
+        ("missed_spike", 1),
+        ("correct_quiet", 0),
+    ]:
+        ts = dict(
+            correct_call=base.format(0),
+            false_alarm=base.format(1),
+            missed_spike=base.format(2),
+            correct_quiet=base.format(3),
+        )[fid]
+        _outcome_row(conn, fid, ts, "2026-07-16T19:10:00Z", spike)
+    conn.commit()
+
+    by_id = {r["event_id"]: r for r in materializer.recent_joined(conn, 10)}
+
+    assert by_id["correct_call"]["outcome"] == "correct_call"
+    assert by_id["false_alarm"]["outcome"] == "false_alarm"
+    assert by_id["missed_spike"]["outcome"] == "missed_spike"
+    assert by_id["correct_quiet"]["outcome"] == "correct_quiet"
+
+
+def test_recent_joined_marks_immature_rows_pending_not_wrong(tmp_path):
+    """A prediction younger than the 60s label horizon has no answer yet.
+    Calling it anything other than pending would be a fabricated verdict."""
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [
+            _graded_event("old", 1, "2026-07-16T19:00:00Z", 0.9),
+            # 30s before the newest feature_ts -- inside the horizon
+            _graded_event("fresh", 2, "2026-07-16T19:04:30Z", 0.9),
+            _graded_event("newest", 3, "2026-07-16T19:05:00Z", 0.9),
+        ],
+    )
+    _outcome_row(conn, "old", "2026-07-16T19:00:00Z", "2026-07-16T19:01:00Z", 1)
+    conn.commit()
+
+    by_id = {r["event_id"]: r for r in materializer.recent_joined(conn, 10)}
+
+    assert by_id["old"]["outcome"] == "correct_call"
+    assert by_id["fresh"]["outcome"] == "pending"
+    assert by_id["newest"]["outcome"] == "pending"
+
+
+def test_recent_joined_never_credits_a_late_scored_row(tmp_path):
+    """api_ts after written_at means the answer was already known when the
+    score was recorded. Replay must not be able to fake foresight."""
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [
+            _graded_event(
+                "late",
+                1,
+                "2026-07-16T19:00:00Z",
+                0.95,
+                api_ts="2026-07-16T19:02:00+00:00",
+            ),
+            _graded_event("anchor", 2, "2026-07-16T19:05:00Z", 0.1),
+        ],
+    )
+    # written BEFORE the api_ts above, with a real spike: would otherwise
+    # read as a correct_call.
+    _outcome_row(conn, "late", "2026-07-16T19:00:00Z", "2026-07-16T19:01:00Z", 1)
+    conn.commit()
+
+    by_id = {r["event_id"]: r for r in materializer.recent_joined(conn, 10)}
+
+    assert by_id["late"]["outcome"] == "unavailable"
+
+
+def test_recent_joined_agrees_with_the_timeline_on_every_row(tmp_path):
+    """The table and the chart are built from the same join and the same
+    maturity anchor, so they must never disagree about a row's verdict."""
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [
+            _graded_event("graded", 1, "2026-07-16T19:00:00Z", 0.92),
+            _graded_event("gap", 2, "2026-07-16T19:01:00Z", 0.40),
+            _graded_event("pending", 3, "2026-07-16T19:04:40Z", 0.50),
+            _graded_event("anchor", 4, "2026-07-16T19:05:00Z", 0.55),
+        ],
+    )
+    _outcome_row(conn, "graded", "2026-07-16T19:00:00Z", "2026-07-16T19:02:00Z", 1)
+    conn.commit()
+
+    table = {r["event_id"]: r["outcome"] for r in materializer.recent_joined(conn, 10)}
+
+    stream_id = materializer._current_stream_segment(conn)
+    anchor = materializer._parse_iso(
+        materializer._newest_predictions_feature_ts(conn, stream_id)
+    )
+    window = materializer.timeline_window(
+        conn, "2026-07-16T18:00:00Z", "2026-07-16T20:00:00Z", stream_id
+    )
+    chart = {
+        row["event_id"]: materializer.timeline.classify_row(row, anchor)
+        for row in window["joined_rows"]
+    }
+
+    assert table == chart
+
+
+def test_recent_joined_scopes_to_the_active_segment(tmp_path):
+    """A prior replay pass shares the same feature_ts range as the current
+    one; leaking it into the table would show duplicate events."""
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [
+            _graded_event(
+                "old_pass",
+                1,
+                "2026-07-16T19:00:00Z",
+                0.9,
+                stream_id="boot-a:0",
+                api_ts="2026-07-16T19:00:00.500000+00:00",
+            ),
+            _graded_event(
+                "new_pass",
+                2,
+                "2026-07-16T19:00:00Z",
+                0.9,
+                stream_id="boot-b:0",
+                api_ts="2026-07-16T19:30:00.500000+00:00",
+            ),
+        ],
+    )
+    conn.commit()
+
+    ids = [r["event_id"] for r in materializer.recent_joined(conn, 10)]
+
+    assert ids == ["new_pass"]
+
+
+def test_recent_joined_carries_all_seven_model_features(tmp_path):
+    """The log must record the complete input a score came from -- carrying
+    only four of the seven is what hid the 2026-04 duplicated-tick skew."""
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [
+            _graded_event(
+                "full",
+                1,
+                "2026-07-16T19:00:00Z",
+                0.5,
+                mean_return_60s=0.00001,
+                n_ticks_60s=600.0,
+                spread_mean_60s=0.01,
+            )
+        ],
+    )
+    conn.commit()
+
+    row = materializer.recent_joined(conn, 10)[0]
+
+    for feature in [
+        "log_return",
+        "spread_bps",
+        "vol_60s",
+        "mean_return_60s",
+        "trade_intensity_60s",
+        "n_ticks_60s",
+        "spread_mean_60s",
+    ]:
+        assert feature in row, f"{feature} missing from the prediction log"
+    assert row["n_ticks_60s"] == 600.0
+    assert row["mean_return_60s"] == 0.00001
+    assert row["spread_mean_60s"] == 0.01
+
+
+def test_recent_joined_via_path_matches_via_connection(tmp_path):
+    db_path = tmp_path / "test.db"
+    conn = materializer.init_db(db_path)
+    materializer.insert_events(
+        conn, [_graded_event("e1", 1, "2026-07-16T19:00:00Z", 0.5)]
+    )
+    conn.commit()
+
+    assert materializer.recent_joined(conn, 10) == materializer.recent_joined(
+        db_path, 10
+    )
+
+
+def test_recent_joined_respects_limit(tmp_path):
+    conn = materializer.init_db(tmp_path / "test.db")
+    materializer.insert_events(
+        conn,
+        [_graded_event(f"e{i}", i, f"2026-07-16T19:0{i}:00Z", 0.5) for i in range(5)],
+    )
+    conn.commit()
+
+    assert len(materializer.recent_joined(conn, 2)) == 2
+
+
 def test_concurrent_read_connections_are_safe_during_writes(tmp_path):
     db_path = tmp_path / "test.db"
     materializer.init_db(db_path).close()

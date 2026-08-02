@@ -7,6 +7,7 @@ isolated Compose project.
 
 Usage:
     python3 scripts/seed_timeline_fixture.py /path/to/predictions.db
+    python3 scripts/seed_timeline_fixture.py /path/to/predictions.db --no-price
 
 Fixture covers, anchored so the newest row is "now" for maturity purposes:
     - a confirmed spike run (correct_call)
@@ -20,6 +21,11 @@ Fixture covers, anchored so the newest row is "now" for maturity purposes:
     - a pending tail (within 60s of the anchor -- outcome hasn't matured yet)
     - rows with api_ts deliberately lagging feature_ts by minutes, to prove
       the timeline aligns on feature_ts, never api_ts
+    - a graded row carrying no market_price (nullable migrated column), which
+      must leave a price gap without dropping the row from grading
+
+--no-price nulls market_price on every row, reproducing a pre-price-capture
+segment so the timeline's "no price recorded" empty state can be verified.
 """
 
 import sys
@@ -79,7 +85,12 @@ def _insert_outcome(
     conn.execute(materializer.INSERT_OUTCOME_SQL, values)
 
 
-def build_fixture(db_path: Path) -> dict:
+def build_fixture(db_path: Path, with_price: bool = True) -> dict:
+    """Seed the fixture DB. `with_price=False` nulls every market_price,
+    reproducing a pre-price-capture segment so the timeline's "no price
+    recorded" empty state can be verified -- that path is otherwise
+    unreachable from a fixture, and an empty price chart with no explanation
+    is exactly the failure it exists to prevent."""
     if db_path.exists():
         raise FileExistsError(f"{db_path} already exists -- refusing to overwrite")
 
@@ -93,7 +104,7 @@ def build_fixture(db_path: Path) -> dict:
     def next_price(delta):
         nonlocal price
         price += delta
-        return price
+        return price if with_price else None
 
     t = ANCHOR - timedelta(minutes=10)
 
@@ -175,7 +186,18 @@ def build_fixture(db_path: Path) -> dict:
     outcomes.append((fid, t, t + timedelta(minutes=4, seconds=5), 0))
     t += timedelta(seconds=30)
 
-    # 8) Pending tail: within 60s of the anchor -- outcome hasn't matured yet.
+    # 8) Graded row with NO market_price -- market_price is a nullable
+    # migrated column, so a single price-less row among priced ones must
+    # leave a genuine gap in the price line without dropping the row from
+    # the prediction chart or from grading.
+    fid = "no_price"
+    events.append(
+        _event(fid, len(events), t, score=0.15, tau=0.7, market_price=None)
+    )
+    outcomes.append((fid, t, t + timedelta(seconds=5), 0))
+    t += timedelta(seconds=30)
+
+    # 9) Pending tail: within 60s of the anchor -- outcome hasn't matured yet.
     for i in range(3):
         ts = ANCHOR - timedelta(seconds=45 - i * 15)
         fid = f"pending_{i}"
@@ -213,10 +235,11 @@ def build_fixture(db_path: Path) -> dict:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if a != "--no-price"]
+    if len(args) != 1:
         print(__doc__)
         raise SystemExit(2)
-    summary = build_fixture(Path(sys.argv[1]))
+    summary = build_fixture(Path(args[0]), with_price="--no-price" not in sys.argv)
     import json
 
     print(json.dumps(summary, indent=2))

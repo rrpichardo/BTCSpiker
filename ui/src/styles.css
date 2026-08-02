@@ -452,6 +452,24 @@ button {
   line-height: 1.7;
 }
 
+.timeline-howto {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.02);
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.timeline-howto strong {
+  color: var(--text);
+}
+
+.timeline-howto-count {
+  color: var(--text-muted);
+}
+
 .state-message {
   margin: 0;
   padding: 16px;
@@ -638,6 +656,72 @@ button {
 .pill-gray {
   background: rgba(123, 135, 148, 0.1);
   color: #a1acb7;
+}
+
+/* Outcome pills in the predictions table. Smaller and lower-contrast than
+   .pill: there is one on every row, so at .pill's weight they'd out-shout
+   the scores they're annotating. */
+.outcome-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-family: var(--mono-font);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.outcome-pill-green {
+  background: rgba(98, 201, 141, 0.1);
+  color: var(--green);
+}
+
+.outcome-pill-amber {
+  background: rgba(241, 184, 75, 0.1);
+  color: var(--amber);
+}
+
+.outcome-pill-red {
+  background: rgba(255, 107, 98, 0.1);
+  color: var(--red);
+}
+
+.outcome-pill-gray {
+  background: rgba(123, 135, 148, 0.1);
+  color: #a1acb7;
+}
+
+.outcome-pill-muted {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+.cell-muted {
+  color: var(--text-muted);
+}
+
+/* The headline verdict reads as a word, not a number, so it needs a colour
+   that carries the same meaning as the outcome pills below it. */
+.stat-verdict-alert {
+  border-top-color: var(--amber);
+  background: linear-gradient(150deg, rgba(241, 184, 75, 0.16), rgba(13, 18, 24, 0.94));
+}
+
+.stat-verdict-alert .stat-value {
+  color: var(--amber);
+}
+
+.stat-verdict-calm {
+  border-top-color: var(--green);
+  background: linear-gradient(150deg, rgba(98, 201, 141, 0.13), rgba(13, 18, 24, 0.94));
+}
+
+.stat-verdict-calm .stat-value {
+  color: var(--green);
 }
 
 .settings-list {

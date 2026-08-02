@@ -43,6 +43,12 @@ EXPECTED_EVENT = {
     "spread_bps": 2.5,
     "log_return": 0.001,
     "trade_intensity_60s": 3.0,
+    # All seven model features, not the four the event originally carried:
+    # without these the read model can't reconstruct the input a score came
+    # from, which is what hid the 2026-04 duplicated-tick skew.
+    "mean_return_60s": 0.0005,
+    "n_ticks_60s": 180,
+    "spread_mean_60s": 4.0,
     "feature_id": "BTC-USD:0:41",
     "stream_epoch": 0,
     "stream_id": "boot1:0",
