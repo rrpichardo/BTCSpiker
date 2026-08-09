@@ -5,3 +5,5 @@ psutil>=5.9,<8
 lightgbm>=4.3,<5
 xgboost>=2.0,<4
 catboost>=1.2,<2
+torch>=2.2,<3
+threadpoolctl>=3.5,<4
