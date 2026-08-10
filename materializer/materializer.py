@@ -60,6 +60,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 import evaluation
 import timeline
+import tournament
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +80,10 @@ PREDICTIONS_DB_PATH = os.getenv("PREDICTIONS_DB_PATH", "/data/predictions.db")
 
 # Evaluation-layer knobs (see evaluation.compute_performance). Same env var
 # name/default as api/main.py's BASELINE_VOL_THRESHOLD for consistency.
+# Offline tournament's MLflow file store, mounted read-only. Absent in the
+# default stack: the tournament runs on the host, not in Compose, so the
+# Tournament tab reports "not wired up" rather than failing.
+TOURNAMENT_MLRUNS_PATH = os.getenv("TOURNAMENT_MLRUNS_PATH", "/tournament/mlruns")
 MIN_POSITIVES = int(os.getenv("MIN_POSITIVES", "10"))
 MIN_NOTE_SAMPLE_N = int(os.getenv("MIN_NOTE_SAMPLE_N", "1000"))
 DRIFT_PR_AUC_RATIO = float(os.getenv("DRIFT_PR_AUC_RATIO", "0.7"))
@@ -1811,6 +1816,29 @@ def get_timeline(
         raise HTTPException(
             status_code=503, detail="predictions database unavailable"
         ) from exc
+
+
+@app.get("/tournament/runs")
+def get_tournament_runs():
+    """Leaderboard of every offline tournament run, best PR-AUC first.
+
+    Independent of the Kafka read model, so it deliberately does not gate on
+    `_state.ready` the way the prediction routes do.
+    """
+    try:
+        return {"runs": tournament.list_runs(TOURNAMENT_MLRUNS_PATH)}
+    except tournament.TournamentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/tournament/runs/{run_id}")
+def get_tournament_run(run_id: str):
+    try:
+        return tournament.get_run(TOURNAMENT_MLRUNS_PATH, run_id)
+    except tournament.TournamentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"unknown run {run_id}") from exc
 
 
 @app.get("/health")

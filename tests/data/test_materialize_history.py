@@ -195,3 +195,49 @@ def test_content_addressed_writer_rejects_corrupted_existing_file(tmp_path):
 
     with pytest.raises(ValueError, match="content digest mismatch"):
         write_feature_outputs_atomic(outputs, tmp_path)
+
+
+def test_joins_microsecond_resolution_timestamps_from_parquet():
+    """Parquet round-trips timestamps at microsecond resolution, but adding a
+    pandas Timedelta promotes the book side to nanoseconds. merge_asof requires
+    both join keys to share a dtype, so the resolutions must be normalized.
+
+    The other tests in this module build fixtures from Python datetimes, which
+    land on nanoseconds for trades and books alike, so they never exercise this.
+    """
+    from tests.data.conftest import DAY_START
+
+    trades = pd.DataFrame(
+        {
+            "product_id": ["BTC-USD"],
+            "trade_id": ["100"],
+            # No segment_id: the real trades shard doesn't carry one, so the
+            # join has to infer segments from the book side.
+            "event_time": pd.Series(
+                [DAY_START + timedelta(seconds=2, microseconds=500_000)]
+            ).astype("datetime64[us, UTC]"),
+            "price": [Decimal("90000.05")],
+            "size": [Decimal("0.01")],
+            "reported_side": ["BUY"],
+        }
+    )
+    books = pd.DataFrame(
+        {
+            "product_id": ["BTC-USD", "BTC-USD"],
+            "observed_through": pd.Series(
+                [DAY_START + timedelta(seconds=1), DAY_START + timedelta(seconds=2)]
+            ).astype("datetime64[us, UTC]"),
+            "sequence_start": [100, 101],
+            "sequence_end": [100, 101],
+            "best_bid": [Decimal("90000.00"), Decimal("90000.00")],
+            "bid_size": [Decimal("2.0"), Decimal("2.0")],
+            "best_ask": [Decimal("90000.10"), Decimal("90000.10")],
+            "ask_size": [Decimal("1.0"), Decimal("1.0")],
+            "segment_id": [0, 0],
+        }
+    )
+
+    joined = join_trades_to_books(trades, books)
+
+    assert len(joined) == 1
+    assert joined.loc[0, "book_observed_through"] == DAY_START + timedelta(seconds=1)

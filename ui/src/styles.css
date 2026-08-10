@@ -1164,3 +1164,39 @@ code {
     scroll-behavior: auto;
   }
 }
+
+/* ---- Tournament tab ---------------------------------------------------- */
+/* .data-table th styles the sticky column header; these tables also use row
+   headers in the body, so reset that here the way .metrics-table does. */
+.tournament-table th[scope="row"] {
+  position: static;
+  z-index: auto;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.tournament-table tbody tr.row-selected {
+  background: var(--accent-soft);
+}
+
+/* A button, so the row opens on keyboard as well as pointer, styled as a link
+   because a table full of buttons reads as a form. */
+.linklike {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.linklike:hover {
+  text-decoration: underline;
+}

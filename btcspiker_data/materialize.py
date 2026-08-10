@@ -36,8 +36,13 @@ def join_trades_to_books(
 
     trade_frame = trade_frame.copy()
     book_frame = book_frame.copy()
-    trade_frame["timestamp"] = pd.to_datetime(trade_frame.pop("event_time"), utc=True)
-    book_frame["book_observed_through"] = pd.to_datetime(book_frame.pop("observed_through"), utc=True)
+    # Pin both sides to nanoseconds before any datetime arithmetic. Parquet
+    # round-trips these columns at microsecond resolution, but adding a
+    # pd.Timedelta below promotes the book side to nanoseconds -- and merge_asof
+    # rejects join keys whose resolutions differ. Fixtures built from Python
+    # datetimes land on nanoseconds for both, so only real shards hit this.
+    trade_frame["timestamp"] = pd.to_datetime(trade_frame.pop("event_time"), utc=True).astype("datetime64[ns, UTC]")
+    book_frame["book_observed_through"] = pd.to_datetime(book_frame.pop("observed_through"), utc=True).astype("datetime64[ns, UTC]")
     book_frame["safe_at"] = book_frame["book_observed_through"] + pd.Timedelta(seconds=1)
 
     if infer_segments:
