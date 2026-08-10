@@ -2,6 +2,34 @@
 
 from __future__ import annotations
 
+import os
+
+# Set BEFORE numpy/scipy/sklearn/torch import, not applied later via
+# threadpoolctl.threadpool_limits() at call time: threadpoolctl only patches
+# native libraries already loaded into the process at the moment it's
+# entered. A library first dlopen'd lazily -- e.g. scipy's lbfgs solver,
+# loaded on a trial's first LogisticRegression.fit() call, not at import time
+# -- would slip through uncapped even inside a `with threadpool_limits():`
+# block, letting that trial oversubscribe while sibling trials
+# (max_parallel_jobs > 1) are still running. Env vars are read by each
+# library at ITS OWN init time, so they hold regardless of load order.
+# Verified empirically: a context-manager-only version of this fix still let
+# a concurrently-loaded OpenMP library report num_threads=11 mid-run.
+#
+# THREAD_LIMIT_ENV_VARS is intentionally a literal copy of
+# btcspiker_ml.search's constant of the same name, not an import of it:
+# `import btcspiker_ml.search` pulls in btcspiker_ml.tracking ->
+# mlflow.sklearn -> sklearn/numpy transitively, which would defeat the
+# entire "before numpy is ever imported" point of this block by importing
+# numpy right here. Drift between the two copies is caught by
+# tests/ml/test_run_experiments.py::test_thread_limit_env_vars_match_search_module.
+THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+)
+for _thread_env in THREAD_LIMIT_ENV_VARS:
+    os.environ.setdefault(_thread_env, "1")
+
 import argparse
 import importlib.util
 import pickle
@@ -100,7 +128,17 @@ def build_stage_trials(config: ExperimentConfig, raw: dict[str, Any], stage: str
         elif family == "logistic_hist_gradient_soft_voting":
             params = {"tree_weight": optuna_trial.suggest_float("tree_weight", 0.2, 0.8)}
         elif family == "neural":
-            params = {"hidden_width": optuna_trial.suggest_categorical("hidden_width", [32, 64, 128])}
+            # window is the model's entire reason to exist -- it is what lets
+            # a sequence model see short-term dynamics a row-independent model
+            # cannot. Searching only hidden_width (as this used to) gives 3
+            # distinct configs across the stage's 10 trials; window and epochs
+            # are searched too so the budget actually explores the space that
+            # matters.
+            params = {
+                "hidden_width": optuna_trial.suggest_categorical("hidden_width", [32, 64, 128]),
+                "window": optuna_trial.suggest_categorical("window", [10, 20, 40]),
+                "epochs": optuna_trial.suggest_int("epochs", 5, 30),
+            }
         else:
             configured = _configured_params(raw, family)
             params = {**configured, **suggest_params(optuna_trial, family)}
@@ -283,55 +321,57 @@ def _evaluate_development_trial(
     # n_jobs=1 alone doesn't guarantee this: HistGradientBoosting has no n_jobs
     # parameter at all and threads internally via OpenMP by default, and the BLAS
     # backend behind plain matrix ops threads independently of any sklearn param.
-    with threadpoolctl.threadpool_limits(limits=1):
-        for fold_number, fold in enumerate(plan.folds):
-            train = np.asarray(fold.train)
-            validation = np.asarray(fold.validation)
-            development_rows.update(fold.train)
-            development_rows.update(fold.validation)
-            model = _candidate_model(spec, config)
-            before_fit = time.perf_counter()
-            model.fit(source.iloc[train], target[train])
-            fit_seconds += time.perf_counter() - before_fit
-            before_inference = time.perf_counter()
-            prediction = model.predict_proba(source.iloc[validation])[:, 1]
-            duration = time.perf_counter() - before_inference
-            inference_seconds += duration
-            per_row_latency_ms.extend([duration * 1_000 / len(validation)] * len(validation))
-            metric = evaluate_predictions(target[validation], prediction, timestamps.iloc[validation], threshold=0.5)
-            fold_metrics[f"fold_{fold_number}_pr_auc"] = metric.pr_auc
-            scores.append(metric.pr_auc)
-            # A prevalence-constant predictor scores PR-AUC == prevalence, so this
-            # counts the folds that actually beat the baseline qualification uses.
-            folds_won += int(metric.pr_auc > metric.prevalence)
-            # The baseline refits per fold and predicts that fold's training
-            # prevalence, so the comparison has to move with it.  Scoring against a
-            # single pooled constant instead measures prevalence drift, which
-            # penalises every model equally — including the baseline itself.
-            fold_baseline = np.full(len(validation), float(target[train].mean()))
-            candidate_brier_total += brier_score_loss(target[validation], prediction) * len(validation)
-            baseline_brier_total += brier_score_loss(target[validation], fold_baseline) * len(validation)
-            oof_parts.append(pd.DataFrame({
-                "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
-                "target": target[validation], "prediction": prediction, "fold": fold_number,
-            }))
-            fold_boundaries.append({
-                "fold": fold_number, "train_rows": len(train), "validation_rows": len(validation),
-                "train_start": str(timestamps.iloc[train[0]]), "train_end": str(timestamps.iloc[train[-1]]),
-                "validation_start": str(timestamps.iloc[validation[0]]), "validation_end": str(timestamps.iloc[validation[-1]]),
-            })
+    # The actual cap is applied once, at process scope, by main() -- see the
+    # threadpool_limits comment there for why a per-trial context manager here
+    # doesn't work under concurrency.
+    for fold_number, fold in enumerate(plan.folds):
+        train = np.asarray(fold.train)
+        validation = np.asarray(fold.validation)
+        development_rows.update(fold.train)
+        development_rows.update(fold.validation)
+        model = _candidate_model(spec, config)
+        before_fit = time.perf_counter()
+        model.fit(source.iloc[train], target[train])
+        fit_seconds += time.perf_counter() - before_fit
+        before_inference = time.perf_counter()
+        prediction = model.predict_proba(source.iloc[validation])[:, 1]
+        duration = time.perf_counter() - before_inference
+        inference_seconds += duration
+        per_row_latency_ms.extend([duration * 1_000 / len(validation)] * len(validation))
+        metric = evaluate_predictions(target[validation], prediction, timestamps.iloc[validation], threshold=0.5)
+        fold_metrics[f"fold_{fold_number}_pr_auc"] = metric.pr_auc
+        scores.append(metric.pr_auc)
+        # A prevalence-constant predictor scores PR-AUC == prevalence, so this
+        # counts the folds that actually beat the baseline qualification uses.
+        folds_won += int(metric.pr_auc > metric.prevalence)
+        # The baseline refits per fold and predicts that fold's training
+        # prevalence, so the comparison has to move with it.  Scoring against a
+        # single pooled constant instead measures prevalence drift, which
+        # penalises every model equally — including the baseline itself.
+        fold_baseline = np.full(len(validation), float(target[train].mean()))
+        candidate_brier_total += brier_score_loss(target[validation], prediction) * len(validation)
+        baseline_brier_total += brier_score_loss(target[validation], fold_baseline) * len(validation)
+        oof_parts.append(pd.DataFrame({
+            "row_index": validation, "timestamp": timestamps.iloc[validation].astype(str).to_numpy(),
+            "target": target[validation], "prediction": prediction, "fold": fold_number,
+        }))
+        fold_boundaries.append({
+            "fold": fold_number, "train_rows": len(train), "validation_rows": len(validation),
+            "train_start": str(timestamps.iloc[train[0]]), "train_end": str(timestamps.iloc[train[-1]]),
+            "validation_start": str(timestamps.iloc[validation[0]]), "validation_end": str(timestamps.iloc[validation[-1]]),
+        })
 
-        oof = pd.concat(oof_parts, ignore_index=True).sort_values("row_index")
-        tau = _best_threshold(oof["target"].to_numpy(), oof["prediction"].to_numpy())
-        if baseline_brier_total <= 0.0:
-            raise ValueError("prevalence baseline has no Brier score to compare against")
-        development_brier_ratio = float(candidate_brier_total / baseline_brier_total)
-        fitted = _candidate_model(spec, config)
-        development = np.asarray(sorted(development_rows), dtype=int)
-        before_refit = time.perf_counter()
-        fitted.fit(source.iloc[development], target[development])
-        fit_seconds += time.perf_counter() - before_refit
-        parity_passed = _roundtrip_feature_parity(fitted, source.iloc[development[: min(256, len(development))]])
+    oof = pd.concat(oof_parts, ignore_index=True).sort_values("row_index")
+    tau = _best_threshold(oof["target"].to_numpy(), oof["prediction"].to_numpy())
+    if baseline_brier_total <= 0.0:
+        raise ValueError("prevalence baseline has no Brier score to compare against")
+    development_brier_ratio = float(candidate_brier_total / baseline_brier_total)
+    fitted = _candidate_model(spec, config)
+    development = np.asarray(sorted(development_rows), dtype=int)
+    before_refit = time.perf_counter()
+    fitted.fit(source.iloc[development], target[development])
+    fit_seconds += time.perf_counter() - before_refit
+    parity_passed = _roundtrip_feature_parity(fitted, source.iloc[development[: min(256, len(development))]])
     model_size_bytes = len(pickle.dumps(fitted, protocol=pickle.HIGHEST_PROTOCOL))
     peak_rss_mb = max(rss_before, psutil.Process().memory_info().rss) / (1024 * 1024)
     total_seconds = time.perf_counter() - started
@@ -429,7 +469,21 @@ def main() -> int:
         "development_fold_positive_events": raw.get("development_fold_positive_events", []),
         "resume": args.resume,
     }
-    result = run_stage(values, args.dataset_id, raw.get("feature_set_id", "unknown"), args.stage)
+    # threadpoolctl's limits (BLAS/OpenMP) and torch's own thread pool are both
+    # process-global state, not thread-local: a context manager or
+    # set_num_threads() call entered/exited PER TRIAL (the old approach) races
+    # when trials run concurrently (max_parallel_jobs > 1, see search.py's
+    # _evaluate_pending_trials) -- trial A finishing and restoring/resetting
+    # threads while B-D are still mid-fit. Applying both caps once, here, for
+    # the whole stage's run is the only placement that actually holds them for
+    # the process's entire trial-fitting lifetime. threadpoolctl doesn't track
+    # torch's own intra-op thread pool, so both calls are needed.
+    if importlib.util.find_spec("torch") is not None:
+        import torch
+
+        torch.set_num_threads(1)
+    with threadpoolctl.threadpool_limits(limits=1):
+        result = run_stage(values, args.dataset_id, raw.get("feature_set_id", "unknown"), args.stage)
     print(f"{args.stage}: {result.status} ({result.parent_run_id})")
     return 0
 

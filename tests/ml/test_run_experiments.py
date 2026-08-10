@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import mlflow
@@ -11,14 +13,27 @@ from sklearn.dummy import DummyClassifier
 from sklearn.metrics import brier_score_loss
 
 from btcspiker_ml.config import load_experiment_config
+from btcspiker_ml.search import THREAD_LIMIT_ENV_VARS as SEARCH_THREAD_LIMIT_ENV_VARS
 from btcspiker_ml.search import SearchState, run_stage
 from scripts.run_experiments import (
+    THREAD_LIMIT_ENV_VARS,
     _TemporalCalibrationSplit,
     _candidate_model,
     _evaluate_development_trial,
     _roundtrip_feature_parity,
     build_stage_trials,
 )
+
+
+def test_thread_limit_env_vars_match_search_module():
+    """scripts/run_experiments.py's THREAD_LIMIT_ENV_VARS is a literal copy
+    of btcspiker_ml.search's constant of the same name (see the comment
+    above run_experiments.py's copy for why it can't just import it -- that
+    would pull in numpy before the whole point of this block, setting the
+    env vars before numpy is ever imported). This test is what keeps the
+    two copies from silently drifting apart.
+    """
+    assert THREAD_LIMIT_ENV_VARS == SEARCH_THREAD_LIMIT_ENV_VARS
 
 
 def _write_config(
@@ -89,15 +104,22 @@ def _write_config(
     return path, raw
 
 
-def test_evaluate_development_trial_limits_threads_to_avoid_oversubscription(tmp_path: Path, monkeypatch):
-    """HistGradientBoosting (and BLAS under the hood) ignore sklearn's n_jobs and
-    thread internally by default, defeating the "one thread per trial, trial-level
-    scheduling owns concurrency" contract max_parallel_jobs relies on."""
-    path, raw = _write_config(tmp_path)
-    config = load_experiment_config(path)
+def test_main_applies_thread_limits_once_at_process_scope_around_run_stage(
+    tmp_path: Path, monkeypatch
+):
+    """threadpoolctl/torch thread limits are process-global, not thread-local:
+    a context manager or set_num_threads() call entered PER TRIAL (the old
+    approach) races when trials run concurrently -- one trial's exit restores
+    unlimited threads while siblings are still mid-fit. The fix moves both
+    calls to wrap the whole stage's run_stage() call exactly once, in main().
+    This pins that placement: exactly one threadpool_limits call, and it must
+    have already been entered by the time run_stage is invoked.
+    """
+    path, _raw = _write_config(tmp_path, linear_trials=1)
     import scripts.run_experiments as runner
 
     recorded_limits: list[int] = []
+    entered_before_run_stage: list[bool] = []
 
     class _RecordingLimiter:
         def __init__(self, limits=None, user_api=None):
@@ -109,13 +131,109 @@ def test_evaluate_development_trial_limits_threads_to_avoid_oversubscription(tmp
         def __exit__(self, *exc_info):
             return False
 
+    def _fake_run_stage(values, *_args):
+        entered_before_run_stage.append(len(recorded_limits) == 1)
+        return SimpleNamespace(status="completed", parent_run_id="parent")
+
     monkeypatch.setattr(runner.threadpoolctl, "threadpool_limits", _RecordingLimiter)
-    frame = pd.read_parquet(raw["storage"]["existing_data"])
-    spec = {"id": "trial-0", "model_family": "logistic", "params": {}, "deployable": True}
+    monkeypatch.setattr(runner, "run_stage", _fake_run_stage)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["run_experiments.py", "--config", str(path), "--dataset-id", "d1", "--stage", "linear"],
+    )
+    monkeypatch.setattr(runner.subprocess, "check_output", lambda *_a, **_k: "abc\n")
 
-    runner._evaluate_development_trial(config, raw, "linear", spec, frame)
+    assert runner.main() == 0
+    assert recorded_limits == [1], (
+        f"expected threadpool_limits(limits=1) exactly once, wrapping the whole stage run; "
+        f"got {recorded_limits}"
+    )
+    assert entered_before_run_stage == [True]
 
-    assert 1 in recorded_limits
+
+def test_concurrent_trial_evaluation_keeps_native_thread_pools_capped_throughout(
+    tmp_path: Path,
+):
+    """Empirical, not a call-count mock -- and specifically NOT run in this
+    pytest process, because that would test the wrong thing.
+
+    An earlier version of this test wrapped run_stage() in-process with
+    `with threadpoolctl.threadpool_limits(limits=1):` and asserted every
+    sampled library stayed capped. It failed even after the real fix landed:
+    threadpoolctl only patches libraries already loaded when it's entered, and
+    scipy's lbfgs solver (used by LogisticRegression) dlopens its own OpenMP
+    library lazily on first fit -- inside the `with` block, after the scan, so
+    never capped. That's not a fluke of this test; it's the exact race the
+    plan warned about, just relocated to library-load order instead of
+    trial-exit order.
+
+    The actual fix (scripts/run_experiments.py's module-level
+    OMP_NUM_THREADS/OPENBLAS_NUM_THREADS/etc.) sidesteps this because each
+    library reads its env var at its OWN init time, regardless of load order
+    -- but that can only be observed in a FRESH interpreter, since this test
+    file's own top-of-file `import pandas`/`import numpy` (and everything
+    else pytest already collected) loads those libraries long before any
+    per-test code runs, making env vars set after the fact a no-op. Hence: a
+    real subprocess, importing scripts.run_experiments (which sets the env
+    vars) before anything else.
+    """
+    path, _raw = _write_config(tmp_path, linear_trials=2)
+    repo_root = Path(__file__).resolve().parents[2]
+    state_dir = tmp_path / "state"
+
+    # scripts.run_experiments must be the first import in the subprocess so
+    # its module-level env-var-setting code runs before numpy/pandas/sklearn
+    # are ever imported -- mirrors exactly how `python scripts/run_experiments.py`
+    # is invoked in production.
+    probe = (
+        "import json, sys, threading\n"
+        "from pathlib import Path\n"
+        "from scripts.run_experiments import _evaluate_development_trial\n"
+        "import pandas as pd\n"
+        "import threadpoolctl\n"
+        "import yaml\n"
+        "from btcspiker_ml.config import load_experiment_config\n"
+        "from btcspiker_ml.search import run_stage\n"
+        "config_path, state_dir = sys.argv[1], sys.argv[2]\n"
+        "config = load_experiment_config(Path(config_path))\n"
+        "raw = yaml.safe_load(open(config_path).read())\n"
+        "frame = pd.read_parquet(raw['storage']['existing_data'])\n"
+        "barrier = threading.Barrier(2, timeout=10)\n"
+        "observed = []\n"
+        "lock = threading.Lock()\n"
+        "def make_evaluator(trial_id):\n"
+        "    spec = {'id': trial_id, 'model_family': 'logistic', 'params': {}, 'deployable': True}\n"
+        "    def _evaluate():\n"
+        "        barrier.wait()\n"
+        "        info = threadpoolctl.threadpool_info()\n"
+        "        with lock:\n"
+        "            observed.extend(e['num_threads'] for e in info if 'num_threads' in e)\n"
+        "        return _evaluate_development_trial(config, raw, 'linear', spec, frame)\n"
+        "    return _evaluate\n"
+        "search_config = {\n"
+        "    'tracking_uri': raw['mlflow']['tracking_uri'], 'experiment_name': 'runner-test',\n"
+        "    'state_dir': state_dir, 'search_id': 'search-thread-cap-subprocess',\n"
+        "    'feature_set_id': 'core_v1', 'target_version': 'vol_spike_v1',\n"
+        "    'validation_version': 'walkforward_v1', 'git_sha': 'abc', 'deployable': True,\n"
+        "    'max_parallel_jobs': 2,\n"
+        "    'trials': [{'id': f'trial-{n}', 'model_family': 'logistic', 'evaluate': make_evaluator(f'trial-{n}')} for n in range(2)],\n"
+        "}\n"
+        "run_stage(search_config, 'd1', 'core_v1', 'linear')\n"
+        "print(json.dumps(observed))\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(path), str(state_dir)],
+        cwd=repo_root, capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode == 0, f"subprocess failed:\n{result.stderr}"
+    observed_limits = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed_limits, "no native threaded library reported -- test isn't exercising real concurrency"
+    assert all(limit == 1 for limit in observed_limits), (
+        f"a trial observed an unrestricted native thread pool while a sibling trial was still "
+        f"running: {observed_limits}"
+    )
 
 
 def test_stage_trial_plans_consume_configured_budgets_families_and_search_params(
@@ -290,6 +408,35 @@ def _regime_shift_frame(
     target = rng.binomial(1, probability)
     frame = pd.DataFrame({"log_return": signal, "spread_bps": rng.normal(size=rows)})
     return frame, target, cut
+
+
+def test_candidate_model_calibrates_the_neural_family_without_crashing(tmp_path: Path):
+    """Regression test for a real crash: build_model alone never exercises
+    CalibratedClassifierCV, which is the wrapper every non-baseline trial
+    actually fits through (_candidate_model, see scripts/run_experiments.py).
+    Before SequenceWindowClassifier picked up ClassifierMixin/BaseEstimator,
+    sklearn.base.is_classifier() returned False for it, and
+    CalibratedClassifierCV.fit() raised ValueError("...Got a regressor...")
+    -- a failure only the calibration path could show, and the existing
+    tests/ml/test_neural.py suite (build_model only) could not.
+    """
+    pytest.importorskip("torch")
+    path, _raw = _write_config(tmp_path)
+    config = load_experiment_config(path)
+    rng = np.random.default_rng(3)
+    rows = 80
+    frame = pd.DataFrame({"log_return": rng.normal(size=rows), "spread_bps": rng.normal(size=rows)})
+    target = rng.integers(0, 2, size=rows)
+
+    candidate = _candidate_model(
+        {"model_family": "neural", "params": {"hidden_width": 4, "window": 5, "epochs": 2}},
+        config,
+    )
+    candidate.fit(frame, target)
+    probabilities = candidate.predict_proba(frame)[:, 1]
+
+    assert probabilities.shape == (rows,)
+    assert np.all((0 <= probabilities) & (probabilities <= 1))
 
 
 def test_calibration_split_trains_before_the_rows_it_calibrates_on():

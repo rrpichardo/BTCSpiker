@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from sklearn.base import BaseEstimator, ClassifierMixin
 from torch import nn
 
 
@@ -26,7 +27,7 @@ class _GRUClassifier(nn.Module):
         return torch.sigmoid(self.head(hidden[-1])).squeeze(-1)
 
 
-class SequenceWindowClassifier:
+class SequenceWindowClassifier(ClassifierMixin, BaseEstimator):
     """Scikit-learn-compatible classifier over a rolling window of recent rows.
 
     ``fit``/``predict_proba`` accept plain row-independent tabular input, same
@@ -34,6 +35,12 @@ class SequenceWindowClassifier:
     against rows ``[i - window + 1, i]`` of the same call's input array, so
     callers must pass rows in chronological order (as the temporal-fold
     machinery in ``scripts/run_experiments.py`` already does).
+
+    ``ClassifierMixin``/``BaseEstimator`` are required, not decorative: without
+    them ``sklearn.base.is_classifier()`` is False, and
+    ``CalibratedClassifierCV`` (see ``scripts/run_experiments.py``'s
+    ``_calibrated``) refuses to fit a pipeline it doesn't recognize as a
+    classifier.
     """
 
     def __init__(
@@ -61,9 +68,14 @@ class SequenceWindowClassifier:
         return np.stack([padded[i : i + self.window] for i in range(n_rows)])
 
     def fit(self, x, y) -> "SequenceWindowClassifier":
+        # torch.set_num_threads is process-global, not thread-local -- calling
+        # it here raced the same way threadpoolctl's per-trial limiter did
+        # (see scripts/run_experiments.py's main()): a concurrent trial's fit()
+        # exiting/re-entering could stomp another trial's setting mid-fit. The
+        # thread budget is the caller's responsibility, set once for the whole
+        # process before any trial runs.
         x = np.asarray(x, dtype=np.float32)
         y = np.asarray(y, dtype=np.float32)
-        torch.set_num_threads(max(1, int(self.n_jobs)))
         torch.manual_seed(self.seed)
         inputs = torch.from_numpy(self._windows(x))
         targets = torch.from_numpy(y)

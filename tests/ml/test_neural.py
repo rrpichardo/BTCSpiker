@@ -64,15 +64,28 @@ def test_sequence_classifier_beats_row_independent_model_on_window_only_signal()
     )
 
 
-def test_sequence_classifier_respects_configured_thread_budget():
+def test_fit_does_not_mutate_the_process_thread_budget():
+    """torch.set_num_threads is process-global, not thread-local -- calling it
+    from inside fit() raced concurrent trials the same way a per-trial
+    threadpoolctl context manager did (see scripts/run_experiments.py's
+    main()): one trial's fit() could stomp another's setting mid-fit. The
+    thread budget is now the caller's responsibility, set once for the whole
+    process before any trial runs, so fit() must leave whatever the caller
+    configured untouched.
+    """
     import torch
 
     x, y = _regime_windows(60, period=10, noise=1.0, seed=1)
     model = build_model("neural", {"hidden_width": 4, "epochs": 1}, seed=42, n_jobs=1)
 
-    model.fit(x, y)
-
-    assert torch.get_num_threads() == 1
+    previous = torch.get_num_threads()
+    configured = 2 if previous == 1 else 1
+    torch.set_num_threads(configured)
+    try:
+        model.fit(x, y)
+        assert torch.get_num_threads() == configured
+    finally:
+        torch.set_num_threads(previous)
 
 
 def test_build_model_neural_requires_torch(monkeypatch):

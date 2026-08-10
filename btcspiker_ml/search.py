@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any, Mapping
@@ -18,6 +19,45 @@ from btcspiker_ml.tracking import ExperimentTracker
 
 
 VALID_STAGES = {"baseline", "linear", "trees", "ablation", "ensemble", "neural"}
+
+# Single source of truth for the native-thread env vars a caller must set
+# (before importing numpy/pandas/sklearn/torch -- see _assert_thread_budget_capped)
+# whenever it runs trials with max_parallel_jobs > 1 through this module.
+# threadpoolctl/torch thread limits are process-global, not thread-local, so
+# _evaluate_pending_trials' ThreadPoolExecutor below oversubscribes the CPU if
+# these aren't capped process-wide first.
+THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+)
+
+
+def _assert_thread_budget_capped() -> None:
+    """Fail loudly, before spawning concurrent trials, if the caller hasn't
+    capped the process-wide native thread budget.
+
+    This can only be enforced here, not fixed here: the env vars must be set
+    before numpy/scipy/sklearn/torch are ever imported anywhere in the
+    process (each library reads them at its own init time), which is a
+    precondition only the process's entrypoint can guarantee -- by the time
+    this function runs, it's too late to set them retroactively. What this
+    function CAN do is turn "a future caller forgot the precondition" from a
+    silent CPU-oversubscription regression into an immediate, actionable
+    error, instead of the process-scope threadpoolctl/env-var mechanism
+    quietly not applying. See scripts/run_experiments.py's main() for the
+    pattern every caller with max_parallel_jobs > 1 must follow.
+    """
+    unset = [name for name in THREAD_LIMIT_ENV_VARS if os.environ.get(name) != "1"]
+    if unset:
+        raise RuntimeError(
+            f"Running trials with max_parallel_jobs > 1 requires a capped native "
+            f"thread budget, but {unset} are not set to '1'. Set every name in "
+            f"THREAD_LIMIT_ENV_VARS as the first lines of your entrypoint, before "
+            "importing numpy/pandas/sklearn/torch (see scripts/run_experiments.py's "
+            "module-level block) -- threadpoolctl and torch's thread limits are "
+            "process-global and can't be applied safely after those libraries are "
+            "already loaded, so this can't be fixed from inside btcspiker_ml itself."
+        )
 
 
 @dataclass
@@ -314,6 +354,8 @@ def _evaluate_pending_trials(
     """
     results: list[tuple[int, Mapping[str, Any], dict[str, Any] | BaseException]] = []
     workers = max(1, max_parallel_jobs)
+    if workers > 1:
+        _assert_thread_budget_capped()
     for start_index in range(0, len(pending), workers):
         batch = pending[start_index:start_index + workers]
         if time.monotonic() - started >= remaining_wall_clock_seconds:

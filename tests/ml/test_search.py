@@ -6,6 +6,7 @@ import time
 import mlflow
 import pytest
 
+from btcspiker_ml import search
 from btcspiker_ml.search import SearchState, run_stage
 
 
@@ -38,6 +39,45 @@ def _config(tmp_path: Path):
             {"id": "ok-3", "model_family": "logistic", "outcome": "finished"},
         ],
     }
+
+
+def test_assert_thread_budget_capped_raises_when_env_vars_unset(monkeypatch):
+    for name in search.THREAD_LIMIT_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(RuntimeError, match="max_parallel_jobs"):
+        search._assert_thread_budget_capped()
+
+
+def test_assert_thread_budget_capped_passes_when_env_vars_set(monkeypatch):
+    for name in search.THREAD_LIMIT_ENV_VARS:
+        monkeypatch.setenv(name, "1")
+
+    search._assert_thread_budget_capped()  # must not raise
+
+
+def test_run_stage_with_concurrent_trials_requires_capped_thread_budget(
+    tmp_path: Path, monkeypatch
+):
+    """The precondition is enforced at the real call site (run_stage's
+    ThreadPoolExecutor path), not just in isolation -- a caller with
+    max_parallel_jobs > 1 that forgot to cap native threads gets a clear,
+    immediate RuntimeError instead of silently oversubscribing the CPU.
+    """
+    for name in search.THREAD_LIMIT_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    config = _config(tmp_path)
+    config.update(
+        max_parallel_jobs=2,
+        trials=[
+            {"id": str(number), "model_family": "logistic", "evaluate": lambda: {"metrics": {}}}
+            for number in range(2)
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="max_parallel_jobs"):
+        run_stage(config, "d1", "core_v1", "linear")
 
 
 def test_run_stage_logs_finished_pruned_failed_and_resume_does_not_duplicate(
@@ -140,8 +180,17 @@ def test_partial_resume_reuses_parent_and_keeps_better_persisted_winner(tmp_path
 
 
 def test_stage_evaluates_independent_trials_up_to_configured_parallel_limit(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ):
+    # run_stage's ThreadPoolExecutor path asserts the process-wide native
+    # thread budget is capped before running trials concurrently (see
+    # btcspiker_ml.search._assert_thread_budget_capped) -- this test's
+    # `evaluate` is synthetic and doesn't touch numpy/sklearn, but the
+    # precondition is checked unconditionally whenever max_parallel_jobs > 1,
+    # so it must be satisfied here too, same as any real caller would.
+    for name in search.THREAD_LIMIT_ENV_VARS:
+        monkeypatch.setenv(name, "1")
+
     config = _config(tmp_path)
     active = 0
     peak = 0
