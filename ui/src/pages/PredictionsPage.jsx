@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePolling } from "../usePolling.js";
-import { fetchRecentPredictions, fetchPredictionsHealth, fetchTimeline } from "../api.js";
+import { fetchRecentPredictions, fetchPredictionsHealth, fetchTimeline, fetchPerformance } from "../api.js";
 import { buildTimelinePoints, rangeToWindow, RANGE_OPTIONS } from "../timelineData.js";
+import { formatMetric, precisionDeltaPp, formatSignedPercentagePoints } from "../performanceData.js";
 import TimelineCharts from "../components/TimelineCharts.jsx";
 import PredictionsTable from "../components/PredictionsTable.jsx";
 import { ageMs, formatAge, formatDateTime, formatProvenance } from "../format.js";
 
 const STALE_MS = 60 * 1000;
 const RESPONSE_STALE_MS = 10 * 1000;
+const KPI_WINDOW_MINUTES = 30;
 
 // 1m/5m/15m poll fast since the whole window is only minutes of data; 1h+
 // ranges poll slower since a single new event barely moves the chart.
@@ -53,6 +55,11 @@ export default function PredictionsPage() {
     isPaused,
   } = usePolling(fetchRecentPredictions, 2000);
   const { data: health, error: healthError } = usePolling(fetchPredictionsHealth, 5000);
+  const perfFetchFn = useCallback(
+    (signal) => fetchPerformance(KPI_WINDOW_MINUTES, signal),
+    [],
+  );
+  const { data: perfData } = usePolling(perfFetchFn, 10000);
 
   const predictions = predData?.predictions ?? [];
   const latest = predictions[0] ?? null;
@@ -61,6 +68,12 @@ export default function PredictionsPage() {
   const hasPredictionResponse = predData !== null;
   const statusLabel = isPaused ? "Paused" : stale ? "Degraded" : "Live";
   const bootstrapAnchor = latest?.feature_ts ?? latest?.api_ts ?? null;
+
+  const perfSeries = perfData?.modes?.official?.series ?? [];
+  const mlSeries = perfSeries.find((s) => s.model_variant === "ml");
+  const baselineSeries = perfSeries.find((s) => s.model_variant === "baseline");
+  const vsBaselinePp = precisionDeltaPp(mlSeries, baselineSeries);
+  const perfIncomplete = perfData !== null && perfData !== undefined && perfData.complete === false;
 
   return (
     <section className="page" id="predictions-page" aria-labelledby="predictions-heading">
@@ -100,34 +113,37 @@ export default function PredictionsPage() {
         </div>
       )}
 
+      {perfIncomplete && (
+        <p className="state-message" role="status">
+          Retained history for the last {KPI_WINDOW_MINUTES}m doesn't fully reach back yet — the
+          numbers below are based on partial data.
+        </p>
+      )}
+
       <div className="latest-score-panel">
         <div className="stat stat-primary">
-          <span className="stat-label">Spike score</span>
-          <span className="stat-value">
-            {latest && typeof latest.score === "number" ? latest.score.toFixed(3) : "—"}
-          </span>
-          <span className="stat-context">Latest model output · 0 to 1</span>
+          <span className="stat-label">Spikes caught</span>
+          <span className="stat-value">{mlSeries ? formatMetric(mlSeries.tp, 0) : "—"}</span>
+          <span className="stat-context">True positives · last {KPI_WINDOW_MINUTES}m</span>
         </div>
         <div className="stat">
-          <span className="stat-label">Model</span>
+          <span className="stat-label">False alarms</span>
           <span className="stat-value stat-value-small">
-            {latest ? `${latest.model_variant} / ${latest.model_version}` : "—"}
+            {mlSeries ? formatMetric(mlSeries.fp, 0) : "—"}
           </span>
-          <span className="stat-context">Active scoring bundle</span>
+          <span className="stat-context">Alerted, no spike followed</span>
         </div>
         <div className="stat">
-          <span className="stat-label">Event time</span>
+          <span className="stat-label">Precision</span>
           <span className="stat-value stat-value-small">
-            {latest ? formatDateTime(latest.feature_ts || latest.api_ts) : "—"}
+            {typeof mlSeries?.precision === "number" ? `${(mlSeries.precision * 100).toFixed(0)}%` : "—"}
           </span>
-          <span className="stat-context">Original feature timestamp</span>
+          <span className="stat-context">When it alerted, how often right</span>
         </div>
         <div className="stat stat-compact">
-          <span className="stat-label">Feed samples</span>
-          <span className="stat-value stat-value-small">
-            {hasPredictionResponse ? predictions.length.toLocaleString() : "—"}
-          </span>
-          <span className="stat-context">Up to 500 recent events</span>
+          <span className="stat-label">vs Baseline</span>
+          <span className="stat-value stat-value-small">{formatSignedPercentagePoints(vsBaselinePp)}</span>
+          <span className="stat-context">Precision vs. the dumb volatility rule</span>
         </div>
       </div>
 

@@ -50,8 +50,10 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
   }, [points]);
   const priceAxisWidth = priceTickAxisWidth(priceDomainSpan);
 
-  const predictedBands = useMemo(() => classBands(points, "predicted"), [points]);
-  const confirmedBands = useMemo(() => classBands(points, "confirmedSpike"), [points]);
+  const correctCallBands = useMemo(() => classBands(points, "correctCall"), [points]);
+  const falseAlarmBands = useMemo(() => classBands(points, "falseAlarm"), [points]);
+  const missedSpikeBands = useMemo(() => classBands(points, "missedSpike"), [points]);
+  const correctQuietBands = useMemo(() => classBands(points, "correctQuiet"), [points]);
   const pendingBands = useMemo(() => classBands(points, "pending"), [points]);
   const unavailableBands = useMemo(() => classBands(points, "unavailable"), [points]);
 
@@ -126,7 +128,7 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
         <div
           className="score-chart-visual"
           role="img"
-          aria-label="Model spike score and threshold, with predicted, confirmed, pending, and unavailable outcome regions"
+          aria-label="Model spike score and threshold, with correct-call, false-alarm, missed-spike, correct-quiet, pending, and unavailable outcome regions"
         >
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={points} syncId="timeline" margin={CHART_MARGIN}>
@@ -151,16 +153,14 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
                 labelFormatter={(label) => `Time: ${timeLabel(label)}`}
                 formatter={tooltipFormatter}
               />
-              {unavailableBands.map((band, index) => (
+              {correctQuietBands.map((band, index) => (
                 <ReferenceArea
-                  key={`unavailable-${band.x1}-${index}`}
+                  key={`correct-quiet-${band.x1}-${index}`}
                   x1={band.x1}
                   x2={band.x2}
-                  fill="var(--red)"
-                  fillOpacity={0.12}
-                  stroke="var(--red)"
-                  strokeOpacity={0.3}
-                  strokeDasharray="2 2"
+                  fill="var(--gray)"
+                  fillOpacity={0.08}
+                  stroke="none"
                   ifOverflow="extendDomain"
                 />
               ))}
@@ -171,27 +171,53 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
                   x2={band.x2}
                   fill="var(--gray)"
                   fillOpacity={0.18}
-                  stroke="none"
+                  stroke="var(--border-strong)"
+                  strokeDasharray="2 2"
                   ifOverflow="extendDomain"
                 />
               ))}
-              {predictedBands.map((band, index) => (
+              {unavailableBands.map((band, index) => (
                 <ReferenceArea
-                  key={`predicted-${band.x1}-${index}`}
+                  key={`unavailable-${band.x1}-${index}`}
                   x1={band.x1}
                   x2={band.x2}
-                  fill="var(--accent-soft)"
+                  fill="var(--red)"
+                  fillOpacity={0.1}
+                  stroke="var(--red)"
+                  strokeOpacity={0.3}
+                  strokeDasharray="2 2"
+                  ifOverflow="extendDomain"
+                />
+              ))}
+              {missedSpikeBands.map((band, index) => (
+                <ReferenceArea
+                  key={`missed-spike-${band.x1}-${index}`}
+                  x1={band.x1}
+                  x2={band.x2}
+                  fill="var(--amber)"
+                  fillOpacity={0.2}
                   stroke="none"
                   ifOverflow="extendDomain"
                 />
               ))}
-              {confirmedBands.map((band, index) => (
+              {falseAlarmBands.map((band, index) => (
                 <ReferenceArea
-                  key={`confirmed-${band.x1}-${index}`}
+                  key={`false-alarm-${band.x1}-${index}`}
+                  x1={band.x1}
+                  x2={band.x2}
+                  fill="var(--red)"
+                  fillOpacity={0.18}
+                  stroke="none"
+                  ifOverflow="extendDomain"
+                />
+              ))}
+              {correctCallBands.map((band, index) => (
+                <ReferenceArea
+                  key={`correct-call-${band.x1}-${index}`}
                   x1={band.x1}
                   x2={band.x2}
                   fill="var(--green)"
-                  fillOpacity={0.16}
+                  fillOpacity={0.18}
                   stroke="none"
                   ifOverflow="extendDomain"
                 />
@@ -222,13 +248,19 @@ export default function TimelineCharts({ points, from, to, complete, availableFr
       </figure>
 
       <p className="panel-meta timeline-legend">
-        <span style={{ color: "var(--green)" }}>■</span> BTC price ·{" "}
-        <span style={{ color: "var(--accent)" }}>■</span> Score ·{" "}
-        <span style={{ color: "var(--amber)" }}>■</span> Threshold τ ·{" "}
-        <span style={{ color: "var(--accent)" }}>▨</span> Predicted ·{" "}
-        <span style={{ color: "var(--green)" }}>▨</span> Confirmed spike ·{" "}
-        <span style={{ color: "var(--gray)" }}>▨</span> Pending ·{" "}
-        <span style={{ color: "var(--red)" }}>▨</span> Unavailable
+        <span className="timeline-legend-group-label">Lines</span>{" "}
+        <span style={{ color: "var(--green)" }}>▬</span> BTC price ·{" "}
+        <span style={{ color: "var(--accent)" }}>▬</span> Score ·{" "}
+        <span style={{ color: "var(--amber)" }}>┄</span> Threshold τ
+      </p>
+      <p className="panel-meta timeline-legend">
+        <span className="timeline-legend-group-label">Outcomes</span>{" "}
+        <span style={{ color: "var(--green)", opacity: 0.18 }}>■</span> Correct call ·{" "}
+        <span style={{ color: "var(--red)", opacity: 0.18 }}>■</span> False alarm ·{" "}
+        <span style={{ color: "var(--amber)", opacity: 0.2 }}>■</span> Missed spike ·{" "}
+        <span style={{ color: "var(--gray)", opacity: 0.08 }}>■</span> Correct quiet ·{" "}
+        <span style={{ color: "var(--gray)", opacity: 0.18 }}>▨</span> Pending ·{" "}
+        <span style={{ color: "var(--red)", opacity: 0.1 }}>▨</span> Unavailable
       </p>
     </div>
   );

@@ -40,26 +40,32 @@ export function rangeToWindow(rangeKey, anchorIso) {
 }
 
 // A raw (non-aggregated) point carries a single "class"; a bucketed point
-// carries "classes", a count per class. Both shapes reduce to the same
-// five boolean flags the charts need.
+// carries "classes", a count per class. Both shapes reduce to the same six
+// boolean flags -- one per outcome state -- so a chart can band on any of
+// them directly. Deliberately NOT the "predicted" (correct_call OR
+// false_alarm) / "confirmedSpike" (correct_call OR missed_spike) ingredient
+// flags this used to expose: those two overlap on every correct_call (both
+// true over the same span), which is exactly the "two overlapping bands"
+// problem the timeline chart used to have -- drawing the six real states
+// directly keeps them mutually exclusive per point.
 function classFlags(point) {
   if (point.classes) {
     const c = point.classes;
     return {
-      predicted: (c.correct_call ?? 0) + (c.false_alarm ?? 0) > 0,
-      confirmedSpike: (c.correct_call ?? 0) + (c.missed_spike ?? 0) > 0,
+      correctCall: (c.correct_call ?? 0) > 0,
       falseAlarm: (c.false_alarm ?? 0) > 0,
       missedSpike: (c.missed_spike ?? 0) > 0,
+      correctQuiet: (c.correct_quiet ?? 0) > 0,
       pending: (c.pending ?? 0) > 0,
       unavailable: (c.unavailable ?? 0) > 0,
     };
   }
   const cls = point.class;
   return {
-    predicted: cls === "correct_call" || cls === "false_alarm",
-    confirmedSpike: cls === "correct_call" || cls === "missed_spike",
+    correctCall: cls === "correct_call",
     falseAlarm: cls === "false_alarm",
     missedSpike: cls === "missed_spike",
+    correctQuiet: cls === "correct_quiet",
     pending: cls === "pending",
     unavailable: cls === "unavailable",
   };

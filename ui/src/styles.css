@@ -452,6 +452,15 @@ button {
   line-height: 1.7;
 }
 
+.timeline-legend + .timeline-legend {
+  margin-top: 2px;
+}
+
+.timeline-legend-group-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .state-message {
   margin: 0;
   padding: 16px;

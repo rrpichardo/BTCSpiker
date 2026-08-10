@@ -64,6 +64,22 @@ export function formatMetric(value, digits = 3) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
 
+// ML precision minus the baseline series' precision, in percentage points --
+// null (not 0) when either series is missing or lacks a numeric precision,
+// so the caller can render "—" instead of a misleading "+0.0pp".
+export function precisionDeltaPp(mlSeries, baselineSeries) {
+  if (typeof mlSeries?.precision !== "number" || typeof baselineSeries?.precision !== "number") {
+    return null;
+  }
+  return (mlSeries.precision - baselineSeries.precision) * 100;
+}
+
+export function formatSignedPercentagePoints(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "±";
+  return `${sign}${Math.abs(value).toFixed(1)}pp`;
+}
+
 // Shared by the Grading lag and Label horizon stats — both are "N seconds",
 // nothing more; only their surrounding label text differs.
 export function formatSeconds(seconds) {

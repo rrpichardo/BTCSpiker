@@ -48,8 +48,10 @@ test("buildTimelinePoints treats missing price/score as null, not dropped or zer
   );
 });
 
-test("buildTimelinePoints derives flags from a raw point's single class", () => {
-  const [correctCall, falseAlarm, missedSpike, correctQuiet, pending, unavailable] = buildTimelinePoints([
+const ALL_FLAGS = ["correctCall", "falseAlarm", "missedSpike", "correctQuiet", "pending", "unavailable"];
+
+test("buildTimelinePoints derives one exclusive flag per raw point's single class", () => {
+  const points = buildTimelinePoints([
     { feature_ts: "2026-07-16T19:00:00Z", class: "correct_call" },
     { feature_ts: "2026-07-16T19:00:01Z", class: "false_alarm" },
     { feature_ts: "2026-07-16T19:00:02Z", class: "missed_spike" },
@@ -57,31 +59,30 @@ test("buildTimelinePoints derives flags from a raw point's single class", () => 
     { feature_ts: "2026-07-16T19:00:04Z", class: "pending" },
     { feature_ts: "2026-07-16T19:00:05Z", class: "unavailable" },
   ]);
+  const [correctCall, falseAlarm, missedSpike, correctQuiet, pending, unavailable] = points;
 
-  assert.deepEqual(
-    [correctCall.predicted, correctCall.confirmedSpike],
-    [true, true],
-  );
-  assert.deepEqual(
-    [falseAlarm.predicted, falseAlarm.confirmedSpike, falseAlarm.falseAlarm],
-    [true, false, true],
-  );
-  assert.deepEqual(
-    [missedSpike.predicted, missedSpike.confirmedSpike, missedSpike.missedSpike],
-    [false, true, true],
-  );
-  assert.deepEqual(
-    [correctQuiet.predicted, correctQuiet.confirmedSpike],
-    [false, false],
-  );
-  assert.equal(pending.pending, true);
-  assert.equal(unavailable.unavailable, true);
+  // Each point's own class flag is true and every other flag is false --
+  // the six states are mutually exclusive per point, not overlapping
+  // "ingredient" flags like the old predicted/confirmedSpike pair.
+  for (const [point, expectedTrueFlag] of [
+    [correctCall, "correctCall"],
+    [falseAlarm, "falseAlarm"],
+    [missedSpike, "missedSpike"],
+    [correctQuiet, "correctQuiet"],
+    [pending, "pending"],
+    [unavailable, "unavailable"],
+  ]) {
+    for (const flag of ALL_FLAGS) {
+      assert.equal(point[flag], flag === expectedTrueFlag, `${expectedTrueFlag} point's ${flag} flag`);
+    }
+  }
 });
 
-test("buildTimelinePoints derives flags from a bucketed point's class counts, keeping pairs distinct", () => {
+test("buildTimelinePoints derives flags from a bucketed point's class counts, keeping states distinct", () => {
   // A bucket with one missed_spike and one false_alarm must show BOTH, and
-  // must never claim a correct_call it never had -- proves aggregation never
-  // pairs one row's prediction with a different row's outcome.
+  // must never claim a correct_call it never had -- each flag now counts its
+  // own class directly (no union of two different classes), so aggregation
+  // can't pair one row's prediction with a different row's outcome.
   const [bucket] = buildTimelinePoints([
     {
       feature_ts: "2026-07-16T19:00:00Z",
@@ -91,8 +92,8 @@ test("buildTimelinePoints derives flags from a bucketed point's class counts, ke
 
   assert.equal(bucket.missedSpike, true);
   assert.equal(bucket.falseAlarm, true);
-  assert.equal(bucket.confirmedSpike, true); // missed_spike counts as a real spike
-  assert.equal(bucket.predicted, true); // false_alarm counts as a predicted call
+  assert.equal(bucket.correctCall, false);
+  assert.equal(bucket.correctQuiet, false);
 });
 
 test("rangeToWindow anchors on the given timestamp, not wall-clock now", () => {
@@ -120,12 +121,12 @@ test("rangeToWindow pads `to` past the anchor so the newest point isn't excluded
 test("classBands (re-exported outcomeBands) merges consecutive flagged points into spans", () => {
   const points = buildTimelinePoints([
     { feature_ts: "2026-07-16T19:00:00Z", class: "correct_quiet" },
-    { feature_ts: "2026-07-16T19:00:01Z", class: "correct_call" },
-    { feature_ts: "2026-07-16T19:00:02Z", class: "false_alarm" },
+    { feature_ts: "2026-07-16T19:00:01Z", class: "missed_spike" },
+    { feature_ts: "2026-07-16T19:00:02Z", class: "missed_spike" },
     { feature_ts: "2026-07-16T19:00:03Z", class: "correct_quiet" },
   ]);
 
-  const bands = classBands(points, "predicted");
+  const bands = classBands(points, "missedSpike");
 
   assert.deepEqual(bands, [
     { x1: Date.parse("2026-07-16T19:00:01Z"), x2: Date.parse("2026-07-16T19:00:02Z") },
