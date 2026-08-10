@@ -1,5 +1,3 @@
 
-## 00:54 | claude/run-server-bbe51f
-Investigated pending work, identified unmerged perf-fix branch (`claude/bug-investigation-79e34e`: DB index + deadline guardrail on `/predictions`) and materializer health-check blind spot (false-ok on Kafka stall), began fixes.
-## 01:15 | main
-Investigated PR #1 & claude/web-ui deletion; confirmed code in main via integration/web-ui-plus-ml, branch restored.
+## 22:22 | fix/real-neural-stage-and-thread-cap
+Cherry-picked real neural + thread-cap fixes to PR #6, fixed conflicts and pinned torch/threadpoolctl — but review found neural crashes in calibration wrapper (missing ClassifierMixin) and thread-cap races (process-global BLAS).
