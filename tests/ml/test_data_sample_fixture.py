@@ -47,12 +47,17 @@ def test_manifest_matches_artifacts():
     raw_lines = _raw_lines()
     assert artifacts["raw_slice.ndjson"]["rows"] == len(raw_lines)
     assert artifacts["raw_slice.ndjson"]["sha256"] == sha256_file(RAW_NDJSON)
-    assert manifest["source_sha256"] == hashlib.sha256(RAW_NDJSON.read_bytes()).hexdigest()
+    assert (
+        manifest["source_sha256"] == hashlib.sha256(RAW_NDJSON.read_bytes()).hexdigest()
+    )
 
     raw_parquet_path = DATA_SAMPLE_DIR / "raw_slice.parquet"
     assert artifacts["raw_slice.parquet"]["sha256"] == sha256_file(raw_parquet_path)
     assert artifacts["raw_slice.parquet"]["rows"] == len(raw_lines)
-    assert list(pd.read_parquet(raw_parquet_path).columns) == artifacts["raw_slice.parquet"]["columns"]
+    assert (
+        list(pd.read_parquet(raw_parquet_path).columns)
+        == artifacts["raw_slice.parquet"]["columns"]
+    )
 
     for name, path in (
         ("features_slice.parquet", FEATURES_PARQUET),
@@ -63,7 +68,9 @@ def test_manifest_matches_artifacts():
         assert list(_load(path).columns) == artifacts[name]["columns"]
 
     features_df = pd.read_parquet(FEATURES_PARQUET)
-    assert manifest["class_prevalence"]["vol_spike"] == float(features_df["vol_spike"].mean())
+    assert manifest["class_prevalence"]["vol_spike"] == float(
+        features_df["vol_spike"].mean()
+    )
 
 
 def _load(path: Path) -> pd.DataFrame:

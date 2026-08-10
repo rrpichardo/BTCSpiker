@@ -268,7 +268,9 @@ def test_exact_duplicate_tick_is_dropped_and_does_not_advance_seq():
 
     third_row, _ = stream.ingest(_tick("BTC-USD", 0.5, 100.5))
     assert third_row["feature_id"] == "BTC-USD:boot1:0:1"  # not :2
-    assert third_row["n_ticks_60s"] == 2  # not 3 — the duplicate never entered the buffer
+    assert (
+        third_row["n_ticks_60s"] == 2
+    )  # not 3 — the duplicate never entered the buffer
 
 
 def test_non_adjacent_redelivery_within_window_is_dropped():

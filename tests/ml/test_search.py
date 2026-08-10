@@ -71,7 +71,11 @@ def test_run_stage_with_concurrent_trials_requires_capped_thread_budget(
     config.update(
         max_parallel_jobs=2,
         trials=[
-            {"id": str(number), "model_family": "logistic", "evaluate": lambda: {"metrics": {}}}
+            {
+                "id": str(number),
+                "model_family": "logistic",
+                "evaluate": lambda: {"metrics": {}},
+            }
             for number in range(2)
         ],
     )

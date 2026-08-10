@@ -511,7 +511,8 @@ def test_fastapi_timeline_excludes_prior_segment(tmp_path, monkeypatch):
         conn,
         [
             _event(
-                f"boot1-{i}", i,
+                f"boot1-{i}",
+                i,
                 feature_ts=f"2026-07-16T19:00:{i:02d}Z",
                 api_ts="2026-07-16T18:00:00+00:00",
                 feature_id=f"BTC-USD:boot1:0:{i}",
@@ -521,7 +522,8 @@ def test_fastapi_timeline_excludes_prior_segment(tmp_path, monkeypatch):
         ]
         + [
             _event(
-                f"boot2-{i}", 100 + i,
+                f"boot2-{i}",
+                100 + i,
                 feature_ts=f"2026-07-16T19:00:{i:02d}Z",
                 api_ts="2026-07-16T20:00:00+00:00",
                 feature_id=f"BTC-USD:boot2:0:{i}",

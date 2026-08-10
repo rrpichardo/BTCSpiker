@@ -1109,8 +1109,14 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
     conn = materializer.init_db(db_path)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
     assert {
-        "feature_id", "stream_epoch", "tau", "run_id", "market_price",
-        "stream_id", "ingest_mode", "product_id",
+        "feature_id",
+        "stream_epoch",
+        "tau",
+        "run_id",
+        "market_price",
+        "stream_id",
+        "ingest_mode",
+        "product_id",
     } <= columns
 
     row = conn.execute(
@@ -1124,8 +1130,14 @@ def test_predictions_alter_migration_adds_columns_and_preserves_data(tmp_path):
     conn2 = materializer.init_db(db_path)
     columns2 = {row[1] for row in conn2.execute("PRAGMA table_info(predictions)")}
     assert {
-        "feature_id", "stream_epoch", "tau", "run_id", "market_price",
-        "stream_id", "ingest_mode", "product_id",
+        "feature_id",
+        "stream_epoch",
+        "tau",
+        "run_id",
+        "market_price",
+        "stream_id",
+        "ingest_mode",
+        "product_id",
     } <= columns2
     conn2.close()
 
@@ -1191,8 +1203,11 @@ def test_market_price_round_trips_through_insert_and_recent(tmp_path):
 def test_lineage_fields_round_trip_through_insert_and_recent(tmp_path):
     conn = materializer.init_db(tmp_path / "test.db")
     event = _event(
-        "ticks.features:0:1", 1,
-        stream_id="boot1:0", ingest_mode="replay", product_id="BTC-USD",
+        "ticks.features:0:1",
+        1,
+        stream_id="boot1:0",
+        ingest_mode="replay",
+        product_id="BTC-USD",
     )
 
     assert materializer.insert_events(conn, [event]) == 1

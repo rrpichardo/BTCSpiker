@@ -2,6 +2,8 @@ pytest
 pytest-retry
 confluent-kafka
 requests
+black==23.11.0
+ruff==0.15.22
 huggingface-hub>=0.34,<2
 hf-xet>=1.1,<2
 psycopg[binary]>=3.2,<4

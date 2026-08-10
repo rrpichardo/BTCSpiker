@@ -193,7 +193,9 @@ def _extract_scaler(pipeline, feature_cols: list[str]):
     return None
 
 
-_SCALER_STATS = _extract_scaler(PIPELINE, FEATURE_COLS) if PIPELINE is not None else None
+_SCALER_STATS = (
+    _extract_scaler(PIPELINE, FEATURE_COLS) if PIPELINE is not None else None
+)
 
 # ---------------------------------------------------------------------------
 # Git SHA (resolved once at startup)
@@ -387,17 +389,21 @@ def _record_feature_skew(X: np.ndarray) -> None:
     own training-time scaler. No-op if _extract_scaler couldn't find or
     validate a usable scaler (see its docstring)."""
     mean, scale = _SCALER_STATS
-    safe_scale = np.where(scale == 0, 1.0, scale)  # a constant training column has scale 0
+    safe_scale = np.where(
+        scale == 0, 1.0, scale
+    )  # a constant training column has scale 0
     z = np.abs((X - mean) / safe_scale)
     for col_idx, feature in enumerate(FEATURE_COLS):
         col_z = z[:, col_idx]
         for value in col_z:
-            FEATURE_ZSCORE_ABS.labels(feature=feature, model_version=MODEL_VERSION).observe(
-                float(value)
-            )
+            FEATURE_ZSCORE_ABS.labels(
+                feature=feature, model_version=MODEL_VERSION
+            ).observe(float(value))
         crossed = int((col_z >= FEATURE_SKEW_Z_THRESHOLD).sum())
         if crossed:
-            FEATURE_SKEW_ROWS.labels(feature=feature, model_version=MODEL_VERSION).inc(crossed)
+            FEATURE_SKEW_ROWS.labels(feature=feature, model_version=MODEL_VERSION).inc(
+                crossed
+            )
             if feature not in _skew_warned_features:
                 _skew_warned_features.add(feature)
                 logger.warning(

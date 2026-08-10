@@ -352,16 +352,16 @@ def test_sample_json_payload(base_url):
 # Train/serve skew telemetry (feature_zscore_abs / feature_skew_rows_total)
 # ---------------------------------------------------------------------------
 
-_SKEW_METRIC_PATTERN = (
-    r'^{metric}\{{(?=[^}}]*feature="{feature}")(?=[^}}]*model_version=)[^}}]*\}} ([0-9.eE+\-]+)$'
-)
+_SKEW_METRIC_PATTERN = r'^{metric}\{{(?=[^}}]*feature="{feature}")(?=[^}}]*model_version=)[^}}]*\}} ([0-9.eE+\-]+)$'
 
 
 def _metric_value(text: str, metric: str, feature: str) -> float:
     import re
 
     pattern = re.compile(
-        _SKEW_METRIC_PATTERN.format(metric=re.escape(metric), feature=re.escape(feature)),
+        _SKEW_METRIC_PATTERN.format(
+            metric=re.escape(metric), feature=re.escape(feature)
+        ),
         re.MULTILINE,
     )
     match = pattern.search(text)
@@ -375,14 +375,20 @@ def test_predict_exports_feature_zscore_for_skewed_row(base_url):
     skewed_row = {**SAMPLE_ROW, "trade_intensity_60s": 12.0, "n_ticks_60s": 720}
 
     before = requests.get(f"{base_url}/metrics", timeout=5).text
-    count_before = _metric_value(before, "feature_zscore_abs_count", "trade_intensity_60s")
-    skew_before = _metric_value(before, "feature_skew_rows_total", "trade_intensity_60s")
+    count_before = _metric_value(
+        before, "feature_zscore_abs_count", "trade_intensity_60s"
+    )
+    skew_before = _metric_value(
+        before, "feature_skew_rows_total", "trade_intensity_60s"
+    )
 
     r = requests.post(f"{base_url}/predict", json={"rows": [skewed_row]}, timeout=5)
     assert r.status_code == 200
 
     after = requests.get(f"{base_url}/metrics", timeout=5).text
-    count_after = _metric_value(after, "feature_zscore_abs_count", "trade_intensity_60s")
+    count_after = _metric_value(
+        after, "feature_zscore_abs_count", "trade_intensity_60s"
+    )
     skew_after = _metric_value(after, "feature_skew_rows_total", "trade_intensity_60s")
 
     assert count_after == count_before + 1
@@ -396,7 +402,9 @@ def test_normal_row_does_not_trip_skew_counter(base_url):
     normal_row = {**SAMPLE_ROW, "trade_intensity_60s": 3.8, "n_ticks_60s": 230}
 
     before = requests.get(f"{base_url}/metrics", timeout=5).text
-    skew_before = _metric_value(before, "feature_skew_rows_total", "trade_intensity_60s")
+    skew_before = _metric_value(
+        before, "feature_skew_rows_total", "trade_intensity_60s"
+    )
 
     r = requests.post(f"{base_url}/predict", json={"rows": [normal_row]}, timeout=5)
     assert r.status_code == 200
@@ -444,7 +452,11 @@ print("SCALER_EXTRACTION_OK")
     env["MLFLOW_TRACKING_URI"] = "http://127.0.0.1:99999"
     result = subprocess.run(
         [sys.executable, "-c", script],
-        cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=30,
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert "SCALER_EXTRACTION_OK" in result.stdout, result.stdout + result.stderr
 

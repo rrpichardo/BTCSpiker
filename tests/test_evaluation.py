@@ -553,7 +553,15 @@ def test_performance_endpoint_normalizes_feature_ts_for_window_filter(
 # ---------------------------------------------------------------------------
 
 
-def _pred_event(event_id: str, offset: int, *, feature_ts: str, api_ts: str, stream_id, stream_epoch=0) -> dict:
+def _pred_event(
+    event_id: str,
+    offset: int,
+    *,
+    feature_ts: str,
+    api_ts: str,
+    stream_id,
+    stream_epoch=0,
+) -> dict:
     """Minimal raw PredictionEvent dict, insertable via materializer.insert_events."""
     return {
         "event_id": event_id,
@@ -588,7 +596,9 @@ def _performance_body(db_path, monkeypatch, window_minutes=30):
     return response.json()
 
 
-def test_performance_window_excludes_prior_segment_at_same_feature_ts(tmp_path, monkeypatch):
+def test_performance_window_excludes_prior_segment_at_same_feature_ts(
+    tmp_path, monkeypatch
+):
     db_path = tmp_path / "predictions.db"
     conn = materializer.init_db(db_path)
 
@@ -597,13 +607,23 @@ def test_performance_window_excludes_prior_segment_at_same_feature_ts(tmp_path, 
     # the IDENTICAL feature_ts range -- exactly what a `--loop` replay does.
     # Only pass 2's stream_id is the active segment (its api_ts is newest).
     pass_1 = [
-        _pred_event(f"p1-{i}", i, feature_ts=(now - timedelta(seconds=i)).isoformat(),
-                    api_ts=(now - timedelta(minutes=20)).isoformat(), stream_id="boot1:0")
+        _pred_event(
+            f"p1-{i}",
+            i,
+            feature_ts=(now - timedelta(seconds=i)).isoformat(),
+            api_ts=(now - timedelta(minutes=20)).isoformat(),
+            stream_id="boot1:0",
+        )
         for i in range(5)
     ]
     pass_2 = [
-        _pred_event(f"p2-{i}", 100 + i, feature_ts=(now - timedelta(seconds=i)).isoformat(),
-                    api_ts=now.isoformat(), stream_id="boot2:0")
+        _pred_event(
+            f"p2-{i}",
+            100 + i,
+            feature_ts=(now - timedelta(seconds=i)).isoformat(),
+            api_ts=now.isoformat(),
+            stream_id="boot2:0",
+        )
         for i in range(5)
     ]
     materializer.insert_events(conn, pass_1 + pass_2)
@@ -626,12 +646,20 @@ def test_active_segment_follows_newest_boot_not_max_epoch(tmp_path, monkeypatch)
     # boot_b has epoch 0 (a fresh restart) but the NEWEST api_ts -- the live
     # stream. MAX(stream_epoch) would wrongly pick boot_a; api_ts must win.
     old_boot_high_epoch = _pred_event(
-        "old", 1, feature_ts=(now - timedelta(minutes=5)).isoformat(),
-        api_ts=(now - timedelta(minutes=20)).isoformat(), stream_id="boot_a:3", stream_epoch=3,
+        "old",
+        1,
+        feature_ts=(now - timedelta(minutes=5)).isoformat(),
+        api_ts=(now - timedelta(minutes=20)).isoformat(),
+        stream_id="boot_a:3",
+        stream_epoch=3,
     )
     new_boot_low_epoch = _pred_event(
-        "new", 2, feature_ts=now.isoformat(),
-        api_ts=now.isoformat(), stream_id="boot_b:0", stream_epoch=0,
+        "new",
+        2,
+        feature_ts=now.isoformat(),
+        api_ts=now.isoformat(),
+        stream_id="boot_b:0",
+        stream_epoch=0,
     )
     materializer.insert_events(conn, [old_boot_high_epoch, new_boot_low_epoch])
     conn.close()
@@ -648,11 +676,18 @@ def test_null_stream_id_rows_are_reported_as_unknown_lineage(tmp_path, monkeypat
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     current = _pred_event(
-        "current", 1, feature_ts=now.isoformat(), api_ts=now.isoformat(), stream_id="boot1:0"
+        "current",
+        1,
+        feature_ts=now.isoformat(),
+        api_ts=now.isoformat(),
+        stream_id="boot1:0",
     )
     legacy = _pred_event(
-        "legacy", 2, feature_ts=(now - timedelta(minutes=1)).isoformat(),
-        api_ts=(now - timedelta(minutes=1)).isoformat(), stream_id=None,
+        "legacy",
+        2,
+        feature_ts=(now - timedelta(minutes=1)).isoformat(),
+        api_ts=(now - timedelta(minutes=1)).isoformat(),
+        stream_id=None,
     )
     materializer.insert_events(conn, [current, legacy])
     conn.close()

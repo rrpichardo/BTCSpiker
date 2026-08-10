@@ -655,7 +655,9 @@ def _current_stream_segment(conn: sqlite3.Connection) -> str | None:
     means the freshest write always wins, so a late-arriving replay from an
     old boot can't hijack the active segment.
     """
-    row = conn.execute(f"SELECT stream_id FROM predictions {NEWEST_ORDER_SQL} LIMIT 1").fetchone()
+    row = conn.execute(
+        f"SELECT stream_id FROM predictions {NEWEST_ORDER_SQL} LIMIT 1"
+    ).fetchone()
     return row[0] if row else None
 
 

@@ -557,7 +557,10 @@ def compute_performance(
         # -inf both fail a `> adaptive_thresh` comparison the same way) --
         # fixed for correctness/clarity, not because it was misgrading rows.
         adaptive_labels = [
-            1 if row.get("future_vol_60s") is not None and row["future_vol_60s"] > adaptive_thresh else 0
+            1
+            if row.get("future_vol_60s") is not None
+            and row["future_vol_60s"] > adaptive_thresh
+            else 0
             for row in graded_rows
         ]
         adaptive_threshold_info = (

@@ -29,6 +29,7 @@ class SettingsConfigError(RuntimeError):
     a broken mount is a real, fixable configuration problem and must not be
     silently reported the same as "nothing configured yet"."""
 
+
 ENV_FILE_DEFAULT = ".env"
 CONFIG_FILE_DEFAULT = "config.yaml"
 

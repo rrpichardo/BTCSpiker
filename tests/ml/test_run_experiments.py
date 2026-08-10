@@ -19,7 +19,6 @@ from scripts.run_experiments import (
     THREAD_LIMIT_ENV_VARS,
     _TemporalCalibrationSplit,
     _candidate_model,
-    _evaluate_development_trial,
     _roundtrip_feature_parity,
     build_stage_trials,
 )
@@ -139,7 +138,15 @@ def test_main_applies_thread_limits_once_at_process_scope_around_run_stage(
     monkeypatch.setattr(runner, "run_stage", _fake_run_stage)
     monkeypatch.setattr(
         "sys.argv",
-        ["run_experiments.py", "--config", str(path), "--dataset-id", "d1", "--stage", "linear"],
+        [
+            "run_experiments.py",
+            "--config",
+            str(path),
+            "--dataset-id",
+            "d1",
+            "--stage",
+            "linear",
+        ],
     )
     monkeypatch.setattr(runner.subprocess, "check_output", lambda *_a, **_k: "abc\n")
 
@@ -224,12 +231,17 @@ def test_concurrent_trial_evaluation_keeps_native_thread_pools_capped_throughout
 
     result = subprocess.run(
         [sys.executable, "-c", probe, str(path), str(state_dir)],
-        cwd=repo_root, capture_output=True, text=True, timeout=60,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
     assert result.returncode == 0, f"subprocess failed:\n{result.stderr}"
     observed_limits = json.loads(result.stdout.strip().splitlines()[-1])
-    assert observed_limits, "no native threaded library reported -- test isn't exercising real concurrency"
+    assert (
+        observed_limits
+    ), "no native threaded library reported -- test isn't exercising real concurrency"
     assert all(limit == 1 for limit in observed_limits), (
         f"a trial observed an unrestricted native thread pool while a sibling trial was still "
         f"running: {observed_limits}"
@@ -425,11 +437,16 @@ def test_candidate_model_calibrates_the_neural_family_without_crashing(tmp_path:
     config = load_experiment_config(path)
     rng = np.random.default_rng(3)
     rows = 80
-    frame = pd.DataFrame({"log_return": rng.normal(size=rows), "spread_bps": rng.normal(size=rows)})
+    frame = pd.DataFrame(
+        {"log_return": rng.normal(size=rows), "spread_bps": rng.normal(size=rows)}
+    )
     target = rng.integers(0, 2, size=rows)
 
     candidate = _candidate_model(
-        {"model_family": "neural", "params": {"hidden_width": 4, "window": 5, "epochs": 2}},
+        {
+            "model_family": "neural",
+            "params": {"hidden_width": 4, "window": 5, "epochs": 2},
+        },
         config,
     )
     candidate.fit(frame, target)

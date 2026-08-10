@@ -38,7 +38,9 @@ def test_sequence_classifier_returns_calibrated_shaped_probabilities():
 def test_sequence_classifier_handles_history_shorter_than_window():
     x, y = _regime_windows(3, period=10, noise=1.0, seed=1)
 
-    model = build_model("neural", {"hidden_width": 4, "epochs": 2, "window": 20}, seed=42, n_jobs=1)
+    model = build_model(
+        "neural", {"hidden_width": 4, "epochs": 2, "window": 20}, seed=42, n_jobs=1
+    )
     model.fit(x, y)
     probabilities = model.predict_proba(x)[:, 1]
 
@@ -51,17 +53,21 @@ def test_sequence_classifier_beats_row_independent_model_on_window_only_signal()
     x_train, y_train = _regime_windows(1200, period=15, noise=1.2, seed=7)
     x_test, y_test = _regime_windows(400, period=15, noise=1.2, seed=8)
 
-    sequence_model = build_model("neural", {"hidden_width": 16, "epochs": 12, "window": 15}, seed=42, n_jobs=1)
+    sequence_model = build_model(
+        "neural", {"hidden_width": 16, "epochs": 12, "window": 15}, seed=42, n_jobs=1
+    )
     sequence_model.fit(x_train, y_train)
     sequence_auc = roc_auc_score(y_test, sequence_model.predict_proba(x_test)[:, 1])
 
     row_baseline = LogisticRegression().fit(x_train, y_train)
     baseline_auc = roc_auc_score(y_test, row_baseline.predict_proba(x_test)[:, 1])
 
-    assert baseline_auc < 0.62, f"baseline should be near chance on window-only signal, got {baseline_auc}"
-    assert sequence_auc > baseline_auc + 0.15, (
-        f"sequence model ({sequence_auc}) should clearly beat the row-independent baseline ({baseline_auc})"
-    )
+    assert (
+        baseline_auc < 0.62
+    ), f"baseline should be near chance on window-only signal, got {baseline_auc}"
+    assert (
+        sequence_auc > baseline_auc + 0.15
+    ), f"sequence model ({sequence_auc}) should clearly beat the row-independent baseline ({baseline_auc})"
 
 
 def test_fit_does_not_mutate_the_process_thread_budget():
@@ -97,7 +103,9 @@ def test_build_model_neural_requires_torch(monkeypatch):
         build_model("neural", {}, seed=42, n_jobs=1)
 
 
-@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch not installed")
+@pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None, reason="torch not installed"
+)
 def test_build_model_neural_uses_sequence_classifier_not_mlp():
     from btcspiker_ml.neural import SequenceWindowClassifier
 

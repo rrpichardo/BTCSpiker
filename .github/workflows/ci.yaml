@@ -17,7 +17,12 @@ jobs:
           python-version: "3.11"
 
       - name: Install linters
-        run: pip install black ruff
+        # Pinned: an unpinned `pip install black ruff` silently picks up
+        # whatever's newest on each run, and black/ruff's formatting/lint
+        # opinions drift between versions -- that made CI fail on every push
+        # regardless of code changes once a newer release shipped. Pinned to
+        # match the versions the repo is actually formatted against.
+        run: pip install black==23.11.0 ruff==0.15.22
 
       - name: Black (format check)
         run: black --check api/ materializer/ scripts/feature_to_predict_bridge.py tests/
