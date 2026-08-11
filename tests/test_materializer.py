@@ -219,6 +219,61 @@ def test_init_db_recreates_wal_and_shm_siblings(tmp_path):
     assert inserted == 1
 
 
+def test_concurrent_init_db_on_fresh_path_does_not_race(tmp_path, monkeypatch):
+    # Regression test for the CI flake: lifespan() starts the predictions and
+    # outcomes consumer threads together, and both call _init_db_with_recovery_status
+    # independently at startup. On a truly fresh DB, _ensure_columns's
+    # check-then-act (PRAGMA table_info, then ALTER TABLE) isn't atomic across
+    # connections -- both threads could see a column absent and both try to add
+    # it, and the loser raises "duplicate column name".
+    #
+    # Both operations are fast enough on a fresh local file that plain thread
+    # scheduling rarely interleaves them -- a bare threading.Barrier around
+    # init_db was verified NOT to reproduce this reliably (0/3 failures against
+    # deliberately unfixed code). A real gap is injected between the read and
+    # the write, mirroring the shape of the actual bug rather than hoping for
+    # unlucky GIL timing; _db_init_lock (the fix) must keep this at zero
+    # failures even with the gap present, because the second thread can't
+    # enter the critical section -- gap included -- until the first releases
+    # the lock.
+    def _slow_ensure_columns(conn, table, columns):
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        time.sleep(0.05)
+        for name, coltype in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {coltype}")
+
+    monkeypatch.setattr(materializer, "_ensure_columns", _slow_ensure_columns)
+
+    db_path = tmp_path / "predictions.db"
+    n_threads = 4
+    barrier = threading.Barrier(n_threads)
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+
+    def _init():
+        try:
+            barrier.wait()
+            materializer.init_db(db_path).close()
+        except BaseException as exc:  # noqa: BLE001 - capturing for the assertion below
+            with errors_lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_init) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"init_db raced under concurrent startup: {errors!r}"
+
+    conn = sqlite3.connect(str(db_path))
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
+    conn.close()
+    for name, _coltype in materializer.PREDICTIONS_MIGRATED_COLUMNS:
+        assert name in columns
+
+
 def test_consumer_retries_failed_batch_before_polling_or_committing_past_it(
     tmp_path, monkeypatch
 ):
