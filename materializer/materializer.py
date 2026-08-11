@@ -355,6 +355,19 @@ def _normalize_ts(raw: str | None) -> str | None:
     return dt.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
+# `lifespan` starts the predictions and outcomes consumers as separate
+# threads, and both call `_init_db_with_recovery_status` at startup on their
+# own SQLite connection to the same file. `_ensure_columns` below is
+# check-then-act (PRAGMA table_info, then ALTER TABLE) and that isn't atomic
+# across connections: on a fresh DB, both threads can see a column absent
+# before either commits, and both attempt the ALTER -- one succeeds, the
+# other raises "duplicate column name". Serializing the whole DDL section
+# in-process makes the second thread's check correctly observe the first
+# thread's committed schema, turning its own _ensure_columns call into a
+# true no-op instead of a race.
+_db_init_lock = threading.Lock()
+
+
 def _ensure_columns(
     conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]
 ) -> None:
@@ -417,25 +430,28 @@ def _init_db_with_recovery_status(
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
 
     try:
-        schema_existed = (
-            conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions'"
-            ).fetchone()
-            is not None
-        )
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute(SCHEMA_SQL)
-        _ensure_columns(conn, "predictions", PREDICTIONS_MIGRATED_COLUMNS)
-        conn.execute(OUTCOMES_SCHEMA_SQL)
-        _ensure_columns(conn, "outcomes", OUTCOMES_MIGRATED_COLUMNS)
-        for index_sql in INDEX_SQL:
-            conn.execute(index_sql)
-        conn.commit()
+        with _db_init_lock:
+            schema_existed = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions'"
+                ).fetchone()
+                is not None
+            )
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute(SCHEMA_SQL)
+            _ensure_columns(conn, "predictions", PREDICTIONS_MIGRATED_COLUMNS)
+            conn.execute(OUTCOMES_SCHEMA_SQL)
+            _ensure_columns(conn, "outcomes", OUTCOMES_MIGRATED_COLUMNS)
+            for index_sql in INDEX_SQL:
+                conn.execute(index_sql)
+            conn.commit()
     except Exception:
-        # A lock outliving busy_timeout (e.g. the first idx_pred_feature_id
-        # build racing the other consumer supervisor's own init_db call at
-        # startup) must not leak this connection -- the caller's retry loop
-        # needs to be able to try again without accumulating open handles.
+        # _db_init_lock serializes the two in-process consumer threads, but
+        # an external writer to the same file (a manual sqlite3 client, the
+        # diagnostics script) is still a real possibility and could hold a
+        # lock past busy_timeout. Either way, this connection must not leak --
+        # the caller's retry loop needs to try again without accumulating
+        # open handles.
         conn.close()
         raise
     return conn, corrupt or not existed or not schema_existed
