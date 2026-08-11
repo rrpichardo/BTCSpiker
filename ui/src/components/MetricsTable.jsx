@@ -147,6 +147,9 @@ export default function MetricsTable({ mode, modeKey, reference, gradedN }) {
       {refGreyed && (
         <p className="metrics-footnote">Benchmarks apply to the official definition.</p>
       )}
+      {reference?.evaluation_window && (
+        <p className="metrics-footnote">{reference.evaluation_window}</p>
+      )}
       {reference?.baseline_reference && (
         <p className="metrics-footnote">
           Baseline reference: PR-AUC {formatMetric(reference.baseline_reference.pr_auc_test)} (test),{" "}

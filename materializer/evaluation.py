@@ -31,6 +31,13 @@ from statistics import median
 # ---------------------------------------------------------------------------
 REFERENCE = {
     "source": "handoff/docs/model_card_v1.md (held-out evaluation)",
+    "evaluation_window": (
+        "Time-ordered test split (final 20%, n=122,771) of a 65-hour BTC-USD "
+        "collection: 2026-04-07 00:12 -> 2026-04-07 15:54 UTC. The test window "
+        "landed on a quieter market stretch (7.0% spike rate) than train/val "
+        "(15.4%/14.1%) -- consistent with a regime shift, though this alone "
+        "doesn't rule out overfitting."
+    ),
     "ml": {
         "pr_auc_test": 0.1459,
         "f1_test": 0.1359,
