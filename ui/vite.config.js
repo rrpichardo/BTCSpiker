@@ -7,11 +7,17 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // More specific rule first: /api/predictions -> materializer service.
+      // More specific rules first: /api/predictions -> materializer service.
       "/api/predictions": {
         target: "http://localhost:8090",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/predictions/, "/predictions"),
+      },
+      // The tournament projection is served by the materializer as well.
+      "/api/tournament": {
+        target: "http://localhost:8090",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/tournament/, "/tournament"),
       },
       // Everything else under /api -> main api service.
       "/api": {

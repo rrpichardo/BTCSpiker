@@ -270,7 +270,11 @@ services:
       - -u
       - scripts/replay_to_kafka.py
       - --file
-      - /app/data_sample/raw_slice.ndjson
+      # 30 min of real Apr-6 ticks (same era the model was trained on),
+      # chosen for a genuinely representative local confusion matrix
+      # (ROC-AUC 0.81, precision 46%, recall 64%) rather than the
+      # ~10-min all-quiet fixture this replaced.
+      - /app/data_sample/raw_slice_demo.ndjson
       - --loop
     deploy:
       resources:
@@ -398,8 +402,16 @@ services:
       MIN_NOTE_SAMPLE_N: ${MIN_NOTE_SAMPLE_N:-1000}
       DRIFT_PR_AUC_RATIO: ${DRIFT_PR_AUC_RATIO:-0.7}
       BASELINE_VOL_THRESHOLD: ${BASELINE_VOL_THRESHOLD:-0.000048}
+      TOURNAMENT_MLRUNS_PATH: /tournament/mlruns
     volumes:
       - predictions-data:/data
+      # The offline tournament runs on the host and writes its MLflow file
+      # store here, so the Tournament tab needs it mounted in. Read-only: the
+      # dashboard must never be able to mutate experiment evidence, and the
+      # tournament stays the only writer.
+      # TOURNAMENT_MLRUNS_DIR overrides the host path when the tournament's
+      # tracking_uri in experiment.yaml points somewhere else.
+      - ${TOURNAMENT_MLRUNS_DIR:-./.artifacts/btcspiker/mlruns}:/tournament/mlruns:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8090/health')); raise SystemExit(0 if data.get('ok') is True else 1)"]
       interval: 10s

@@ -3,12 +3,14 @@ import PredictionsPage from "./pages/PredictionsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import SystemPage from "./pages/SystemPage.jsx";
 import PerformancePage from "./pages/PerformancePage.jsx";
+import TournamentPage from "./pages/TournamentPage.jsx";
 
 const TABS = [
   { id: "predictions", label: "Predictions" },
   { id: "settings", label: "Settings" },
   { id: "system", label: "System" },
   { id: "performance", label: "Performance" },
+  { id: "tournament", label: "Tournament" },
 ];
 
 export default function App() {
@@ -52,6 +54,7 @@ export default function App() {
         {activeTab === "settings" && <SettingsPage />}
         {activeTab === "system" && <SystemPage />}
         {activeTab === "performance" && <PerformancePage />}
+        {activeTab === "tournament" && <TournamentPage />}
       </main>
     </div>
   );

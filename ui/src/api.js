@@ -64,6 +64,14 @@ export function fetchPerformance(windowMinutes, signal) {
   return getJson(`/api/predictions/performance?window_minutes=${windowMinutes}`, signal);
 }
 
+export function fetchTournamentRuns(signal) {
+  return getJson("/api/tournament/runs", signal);
+}
+
+export function fetchTournamentRun(runId, signal) {
+  return getJson(`/api/tournament/runs/${encodeURIComponent(runId)}`, signal);
+}
+
 export function fetchTimeline(fromIso, toIso, resolution, signal) {
   const params = new URLSearchParams({ from: fromIso, to: toIso });
   if (resolution) params.set("resolution", String(resolution));

@@ -177,6 +177,64 @@ out["lead_seconds"] = {
     "max": leads[-1] if leads else None,
 }
 
+# Loop detection: a fixture replayed on a short loop (the incident this
+# guards against -- a 10-minute smoke sample replayed 51x as if it were
+# hours of market data) repeats the same price sequence verbatim every
+# cycle. Prevalence alone doesn't catch this: a fixture with a couple of
+# real spikes can pass a ">0" check while still being a tiny loop.
+# Hash market_price in fixed 30s buckets (by feature_ts) within the active
+# lineage; two non-adjacent buckets sharing a hash means the same tick
+# sequence played out twice, which real, continuously-evolving market data
+# essentially never does at this resolution.
+import hashlib
+from collections import defaultdict
+
+price_rows = cur.execute(
+    "SELECT feature_ts, market_price FROM predictions "
+    "WHERE feature_ts >= ? AND stream_id IS ? AND market_price IS NOT NULL "
+    "ORDER BY feature_ts",
+    (from_ts, stream_id),
+).fetchall()
+
+BUCKET_SECONDS = 30
+buckets = defaultdict(list)
+t_start = None
+for feature_ts, market_price in price_rows:
+    ts = parse(feature_ts).timestamp()
+    if t_start is None:
+        t_start = ts
+    bucket_idx = int((ts - t_start) // BUCKET_SECONDS)
+    # Round to damp float noise between cycles without hiding a genuine repeat.
+    buckets[bucket_idx].append(round(float(market_price), 2))
+
+hash_to_buckets = defaultdict(list)
+for bucket_idx, prices in buckets.items():
+    if len(prices) < 5:
+        continue  # too short to be a meaningful fingerprint
+    digest = hashlib.sha256(json.dumps(prices).encode()).hexdigest()
+    hash_to_buckets[digest].append(bucket_idx)
+
+
+def _has_nonadjacent_repeat(idxs):
+    # A single contiguous run of adjacent buckets (e.g. a flat/quiet spell
+    # where price didn't move for a minute or two) is expected and not a
+    # loop signal on its own -- only a pair that ISN'T adjacent means the
+    # same tick sequence played out twice. Contiguous <=> max-min == len-1.
+    idxs = sorted(idxs)
+    return idxs[-1] - idxs[0] != len(idxs) - 1
+
+
+repeated = {
+    digest: sorted(idxs)
+    for digest, idxs in hash_to_buckets.items()
+    if len(idxs) > 1 and _has_nonadjacent_repeat(idxs)
+}
+out["loop_detection"] = {
+    "n_buckets": len(buckets),
+    "bucket_seconds": BUCKET_SECONDS,
+    "repeated_bucket_groups": list(repeated.values()),
+}
+
 print(json.dumps(out))
 '''
 
@@ -385,6 +443,23 @@ def main() -> int:
             and lead["p99"] < 120,
             f"p1={lead['p1']} p50={lead['p50']} p99={lead['p99']} reported_median={window['median_lead_seconds']} "
             "(label horizon is 60s; a sane distribution should sit close to it, not spread toward 0 or far past it)",
+        )
+
+        # --- loop detection ---------------------------------------------
+        # This is the check that would have caught the original incident
+        # directly: a 10-minute fixture replayed 51x has zero positive
+        # labels, but a *different* broken fixture with a couple of real
+        # spikes would still pass a bare "prevalence > 0" check. Hashing
+        # fixed-duration price buckets catches the actual pathology --
+        # the same tick sequence recurring -- regardless of label balance.
+        loop = sqlite_diag["loop_detection"]
+        check(
+            lines, failures, "no repeated price sequence across time buckets (replay loop detector)",
+            len(loop["repeated_bucket_groups"]) == 0,
+            f"n_buckets={loop['n_buckets']} bucket_seconds={loop['bucket_seconds']} "
+            f"repeated_groups={loop['repeated_bucket_groups']} "
+            "(non-adjacent buckets sharing an identical price sequence means the same tick "
+            "window played out twice -- real market data doesn't repeat verbatim)",
         )
 
     # --- no replay/live interleave at the container level ------------------
