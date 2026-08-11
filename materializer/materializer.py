@@ -119,6 +119,8 @@ KAFKA_SOCKET_TIMEOUT_MS = 3000
 THREAD_JOIN_TIMEOUT = 10.0
 COMMIT_RETRY_BACKOFF_SEC = 0.1
 CONSUMER_RESTART_BACKOFF_SEC = 1.0
+DB_INIT_MAX_ATTEMPTS = 3
+DB_INIT_RETRY_BACKOFF_SEC = 0.5
 BROKER_HEALTHCHECK_INTERVAL_SEC = 5.0
 BROKER_HEALTHCHECK_TIMEOUT_SEC = 1.0
 
@@ -415,22 +417,32 @@ def _init_db_with_recovery_status(
     """Open the read model and report whether Kafka replay is required."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    existed = path.exists()
 
-    conn = _open_verified(path)
-    corrupt = conn is None
-    if corrupt:
-        log.error(
-            "Predictions DB at %s is corrupt/unreadable; deleting and rebuilding "
-            "from Kafka replay",
-            path,
-        )
-        _delete_db_files(path)
-        conn = sqlite3.connect(str(path))
-        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-
+    conn = None
     try:
         with _db_init_lock:
+            # existed/corrupt-recovery live inside the lock too, not just the
+            # DDL below: _open_verified's PRAGMA integrity_check and
+            # _delete_db_files' check-then-act unlink() are both racy across
+            # the two in-process consumer threads exactly like _ensure_columns
+            # was -- a busy_timeout during one thread's integrity_check (e.g.
+            # the sibling mid-commit) would otherwise be misread as corruption,
+            # and two threads recovering the same corrupt file could unlink()
+            # a path the other already removed.
+            existed = path.exists()
+
+            conn = _open_verified(path)
+            corrupt = conn is None
+            if corrupt:
+                log.error(
+                    "Predictions DB at %s is corrupt/unreadable; deleting and rebuilding "
+                    "from Kafka replay",
+                    path,
+                )
+                _delete_db_files(path)
+                conn = sqlite3.connect(str(path))
+                conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+
             schema_existed = (
                 conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'predictions'"
@@ -446,15 +458,55 @@ def _init_db_with_recovery_status(
                 conn.execute(index_sql)
             conn.commit()
     except Exception:
-        # _db_init_lock serializes the two in-process consumer threads, but
-        # an external writer to the same file (a manual sqlite3 client, the
-        # diagnostics script) is still a real possibility and could hold a
-        # lock past busy_timeout. Either way, this connection must not leak --
-        # the caller's retry loop needs to try again without accumulating
-        # open handles.
-        conn.close()
+        # _db_init_lock now serializes this whole function -- corruption
+        # detection/recreation included, not just the DDL -- across the two
+        # in-process consumer threads. It cannot protect against a write from
+        # OUTSIDE this process, but there is no such writer today:
+        # scripts/diagnose_read_model.py, the only other reader, opens the DB
+        # read-only via _open_readonly ("?mode=ro"). Either way, a connection
+        # must not leak on any failure here -- the caller's retry loop needs
+        # to try again without accumulating open handles.
+        if conn is not None:
+            conn.close()
         raise
     return conn, corrupt or not existed or not schema_existed
+
+
+def _init_db_with_retry(
+    path: str | Path,
+) -> tuple[sqlite3.Connection, bool]:
+    """Retry _init_db_with_recovery_status a few times before giving up.
+
+    consume_loop/consume_outcomes_loop call this as the very first thing they
+    do. lifespan() only waits for each consumer's FIRST attempt: a failure
+    there sets state.startup_error and lifespan raises immediately, without
+    giving supervise_consumer's own restart-after-CONSUMER_RESTART_BACKOFF_SEC
+    loop a chance to run (that loop only gets a second attempt at all once
+    lifespan has already decided to shut everything down). A transient
+    failure specifically at DB-init -- a lock briefly held past busy_timeout,
+    a slow disk mount -- would otherwise take down the whole app on the very
+    first boot, exactly like the schema-migration race _db_init_lock fixes
+    above. Retrying at the source absorbs that without touching the broader
+    startup/readiness protocol, which is unrelated to this failure mode and
+    riskier to change than the bug this addresses warrants.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, DB_INIT_MAX_ATTEMPTS + 1):
+        try:
+            return _init_db_with_recovery_status(path)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < DB_INIT_MAX_ATTEMPTS:
+                log.warning(
+                    "DB init attempt %d/%d failed (%s), retrying in %.1fs",
+                    attempt,
+                    DB_INIT_MAX_ATTEMPTS,
+                    exc,
+                    DB_INIT_RETRY_BACKOFF_SEC,
+                )
+                time.sleep(DB_INIT_RETRY_BACKOFF_SEC)
+    assert last_exc is not None  # loop always runs >=1 attempt
+    raise last_exc
 
 
 def _outcomes_table_missing(path: str | Path) -> bool:
@@ -1100,7 +1152,7 @@ def consume_loop(
     conn = None
     consumer = None
     try:
-        conn, replay_from_beginning = _init_db_with_recovery_status(PREDICTIONS_DB_PATH)
+        conn, replay_from_beginning = _init_db_with_retry(PREDICTIONS_DB_PATH)
         consumer = Consumer(
             {
                 "bootstrap.servers": KAFKA_BOOTSTRAP,
@@ -1275,7 +1327,7 @@ def consume_outcomes_loop(
     consumer = None
     try:
         replay_from_beginning = _outcomes_table_missing(PREDICTIONS_DB_PATH)
-        conn, _ = _init_db_with_recovery_status(PREDICTIONS_DB_PATH)
+        conn, _ = _init_db_with_retry(PREDICTIONS_DB_PATH)
         consumer = Consumer(
             {
                 "bootstrap.servers": KAFKA_BOOTSTRAP,
