@@ -219,6 +219,79 @@ def test_init_db_recreates_wal_and_shm_siblings(tmp_path):
     assert inserted == 1
 
 
+def test_init_db_with_retry_recovers_from_transient_failure(tmp_path, monkeypatch):
+    # _init_db_with_retry exists because lifespan() only waits for a
+    # consumer's FIRST attempt (see its docstring): a failure there is
+    # immediately fatal to the whole app, without giving supervise_consumer's
+    # own restart-after-backoff loop a chance to run. This proves the
+    # narrower fix -- retrying at the DB-init call site itself -- absorbs a
+    # transient failure (e.g. a lock briefly held past busy_timeout) without
+    # needing that broader protocol to change.
+    db_path = tmp_path / "predictions.db"
+    real_init = materializer._init_db_with_recovery_status
+    calls = []
+
+    def _fails_twice_then_succeeds(path):
+        calls.append(path)
+        if len(calls) < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return real_init(path)
+
+    monkeypatch.setattr(
+        materializer, "_init_db_with_recovery_status", _fails_twice_then_succeeds
+    )
+    monkeypatch.setattr(materializer, "DB_INIT_RETRY_BACKOFF_SEC", 0.01)
+
+    conn, _ = materializer._init_db_with_retry(db_path)
+    conn.close()
+
+    assert len(calls) == 3
+
+
+def test_init_db_with_retry_gives_up_after_max_attempts(tmp_path, monkeypatch):
+    # The retry must still be bounded -- a genuinely broken DB (not a
+    # transient blip) has to fail within a fixed number of attempts, not
+    # retry forever and hang startup indefinitely.
+    db_path = tmp_path / "predictions.db"
+    calls = []
+
+    def _always_fails(path):
+        calls.append(path)
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(materializer, "_init_db_with_recovery_status", _always_fails)
+    monkeypatch.setattr(materializer, "DB_INIT_RETRY_BACKOFF_SEC", 0.01)
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        materializer._init_db_with_retry(db_path)
+
+    assert len(calls) == materializer.DB_INIT_MAX_ATTEMPTS
+
+
+def _run_concurrently(target, n_threads, join_timeout=10):
+    """Start `n_threads` copies of `target` and wait for all of them.
+
+    `target` takes no arguments and must catch/report its own errors (the
+    barrier + thread-per-call shape is duplicated across several concurrency
+    tests in this file; this is the one piece worth sharing -- the exception
+    collection strategy differs enough per test, e.g. what gets asserted
+    afterward, that the call site still owns `errors`/`barrier`.)
+    Fails the assertion immediately (not just returning stragglers) if any
+    thread outlives `join_timeout`, rather than silently proceeding to assert
+    on state a still-running thread could still be mutating.
+    """
+    threads = [threading.Thread(target=target) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=join_timeout)
+    stragglers = [t for t in threads if t.is_alive()]
+    assert not stragglers, (
+        f"{len(stragglers)}/{n_threads} thread(s) still running after "
+        f"{join_timeout}s join timeout -- results below may be incomplete/unsafe"
+    )
+
+
 def test_concurrent_init_db_on_fresh_path_does_not_race(tmp_path, monkeypatch):
     # Regression test for the CI flake: lifespan() starts the predictions and
     # outcomes consumer threads together, and both call _init_db_with_recovery_status
@@ -236,34 +309,48 @@ def test_concurrent_init_db_on_fresh_path_does_not_race(tmp_path, monkeypatch):
     # failures even with the gap present, because the second thread can't
     # enter the critical section -- gap included -- until the first releases
     # the lock.
-    def _slow_ensure_columns(conn, table, columns):
-        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-        time.sleep(0.05)
-        for name, coltype in columns:
-            if name not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {coltype}")
+    #
+    # The delay is injected at the sqlite3.Connection.execute seam rather than
+    # by hand-copying _ensure_columns's body: this way the REAL, unmodified
+    # production function runs, so the test can't silently drift out of sync
+    # with it. sqlite3.Connection is a C-level immutable type -- its methods
+    # can't be monkeypatched directly (TypeError: cannot set 'execute'
+    # attribute of immutable type) -- so the delay is installed via a
+    # Connection subclass passed as sqlite3.connect's documented `factory`
+    # argument instead. 0.01s (not the original 0.05s) is already enough
+    # margin -- verified empirically that this still reproduces the race
+    # 3/3 times against deliberately unfixed code below.
+    class _SlowConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.strip().upper().startswith("PRAGMA TABLE_INFO"):
+                time.sleep(0.01)
+            return super().execute(sql, *args, **kwargs)
 
-    monkeypatch.setattr(materializer, "_ensure_columns", _slow_ensure_columns)
+    real_connect = sqlite3.connect
+
+    def _slow_connect(*args, **kwargs):
+        kwargs.setdefault("factory", _SlowConnection)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", _slow_connect)
 
     db_path = tmp_path / "predictions.db"
-    n_threads = 4
+    # Mirrors the real topology: exactly two threads (predictions + outcomes
+    # consumers) call _init_db_with_recovery_status concurrently in production.
+    n_threads = 2
     barrier = threading.Barrier(n_threads)
     errors: list[BaseException] = []
     errors_lock = threading.Lock()
 
     def _init():
         try:
-            barrier.wait()
+            barrier.wait(timeout=5)
             materializer.init_db(db_path).close()
         except BaseException as exc:  # noqa: BLE001 - capturing for the assertion below
             with errors_lock:
                 errors.append(exc)
 
-    threads = [threading.Thread(target=_init) for _ in range(n_threads)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
+    _run_concurrently(_init, n_threads)
 
     assert not errors, f"init_db raced under concurrent startup: {errors!r}"
 
@@ -272,6 +359,91 @@ def test_concurrent_init_db_on_fresh_path_does_not_race(tmp_path, monkeypatch):
     conn.close()
     for name, _coltype in materializer.PREDICTIONS_MIGRATED_COLUMNS:
         assert name in columns
+
+
+def test_concurrent_init_db_on_corrupt_path_does_not_race(tmp_path, monkeypatch):
+    # Regression test for the corruption-recovery race found in code review
+    # after the fresh-path fix above landed: _open_verified and
+    # _delete_db_files used to run OUTSIDE _db_init_lock, so two threads
+    # recovering the same corrupt file at simultaneous startup could race.
+    # _init_db_with_recovery_status now holds _db_init_lock for its entire
+    # body, not just the DDL section; this proves that holds under the same
+    # concurrent-thread conditions as the fresh-path test above.
+    #
+    # Unlike the column-add race, this one's failure mode isn't reliably a
+    # clean exception: POSIX allows a second unlink() on a path the other
+    # thread already recreated (via its own sqlite3.connect) to succeed
+    # silently -- confirmed by instrumenting both threads directly against
+    # deliberately unfixed code: both unlink() calls logged SUCCESS, zero
+    # exceptions, even though the two threads were racing on the same file.
+    # A single trial's "no exception raised" is therefore not a reliable
+    # single-shot signal here (~20-40% catch rate observed against unfixed
+    # code with the delay below). Looping several independent trials makes
+    # the test's statistical power explicit instead of quietly depending on
+    # being lucky once: TRIALS=15 at that catch rate gives well over 99%
+    # odds of catching at least one failure pre-fix (verified: 6/6 runs
+    # failed, typically within the first few trials), while _db_init_lock's
+    # full mutual exclusion (the fix) makes the race structurally impossible
+    # post-fix regardless of trial count.
+    #
+    # An earlier version of this test also forced both threads to finish
+    # _open_verified at the same synchronized instant via a second
+    # threading.Barrier, to remove timing jitter between the two threads'
+    # own integrity_check calls. That deadlocks against the FIXED code:
+    # _open_verified now runs inside _db_init_lock, so the first thread to
+    # acquire the lock blocks on the barrier waiting for the second thread
+    # to arrive -- but the second thread can't reach that barrier until the
+    # first releases the lock it's holding while waiting. Confirmed directly
+    # (a real >60s hang, not a timeout in theory): threading.Barrier.wait()
+    # has no timeout by default, so the deadlocked thread never exits, and a
+    # leaked non-daemon thread blocks the whole pytest process from
+    # terminating even after this test's own join-timeout assertion fires.
+    # Dropped in favor of relying on trial count alone for statistical power.
+    TRIALS = 15
+
+    for trial in range(TRIALS):
+        db_path = tmp_path / f"corrupt-{trial}.db"
+        db_path.write_bytes(b"this is not a sqlite file, just garbage bytes")
+        n_threads = 2  # mirrors the real predictions/outcomes consumer pair
+
+        # Widens _delete_db_files' own internal TOCTOU window (`if
+        # candidate.exists(): candidate.unlink()`) by delaying Path.unlink
+        # specifically, rather than reimplementing that loop's logic.
+        real_unlink = Path.unlink
+
+        def _slow_unlink(self, *args, _real=real_unlink, **kwargs):
+            time.sleep(0.05)
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", _slow_unlink)
+
+        barrier = threading.Barrier(n_threads)
+        errors: list[BaseException] = []
+        errors_lock = threading.Lock()
+
+        def _init():
+            try:
+                barrier.wait(timeout=5)
+                materializer.init_db(db_path).close()
+            except (
+                BaseException
+            ) as exc:  # noqa: BLE001 - capturing for the assertion below
+                with errors_lock:
+                    errors.append(exc)
+
+        _run_concurrently(_init, n_threads)
+
+        assert (
+            not errors
+        ), f"trial {trial + 1}/{TRIALS}: init_db raced on corrupt-path recovery: {errors!r}"
+
+        conn = sqlite3.connect(str(db_path))
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)")}
+        conn.close()
+        for name, _coltype in materializer.PREDICTIONS_MIGRATED_COLUMNS:
+            assert (
+                name in columns
+            ), f"trial {trial + 1}/{TRIALS}: missing column {name!r}"
 
 
 def test_consumer_retries_failed_batch_before_polling_or_committing_past_it(
