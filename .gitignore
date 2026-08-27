@@ -38,3 +38,6 @@ mlruns/
 .remember/tmp/
 .last-git-backup-ts
 .git-backup-remote
+
+# Local productivity dashboard (not project code)
+dashboard.html

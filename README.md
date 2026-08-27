@@ -19,6 +19,71 @@ Open the web UI at http://localhost:3001.
 
 BTCSpiker is a real-time service that streams Coinbase style ticks into Kafka, generates rolling window features, and serves predictions via a FastAPI API. Prediction events are published to Kafka and projected into a SQLite read model for the web UI. The system runs end to end in replay mode with Prometheus and Grafana monitoring, and supports rollback using MODEL_VARIANT.
 
+## Known issues (as of 2026-08-27)
+
+The screenshots below are live captures from `docker compose up -d --build` on this
+revision ([`d417cdb`](https://github.com/rrpichardo/BTCSpiker/commit/d417cdb8c57df686b16ac90114a5effa4ccdf462)),
+not mockups. They're here because the problems they show have been reported and
+"fixed" more than once without the fix holding, and that needs to be visible instead
+of buried in commit history.
+
+### Live grading keeps regressing to ~0% precision, and the fix hasn't held
+
+| Date | What happened |
+|---|---|
+| 2026-08-10 | Root-caused as an **inverted model ranking** (live ROC-AUC 0.12 — worse than the 0.5 coin flip) via `scripts/diagnose_read_model.py`. Fixed in [`1bdac82`](https://github.com/rrpichardo/BTCSpiker/commit/1bdac82d9249f8b2572635d773c09cf6b293d2dc). |
+| 2026-08-10 (later) | Verified working at accelerated 8x replay speed: 1,159 true positives, 63.6% recall, 46.3% precision. |
+| 2026-08-11 | Regressed to **0/44 spike recall** at normal replay speed. Investigation opened, not closed by end of session. |
+| 2026-08-27 (this capture) | Still broken. See below. |
+
+![Predictions tab, captured live](docs/screenshots/predictions.png)
+
+*0 spikes caught, 0 false alarms, `–` precision — the model's score sits at 0.5–0.7
+for the entire 15-minute window shown, hugging its own 0.702 decision threshold
+without ever producing a graded outcome that resolves either way.*
+
+![Performance tab, captured live](docs/screenshots/performance.png)
+
+*"No real spikes occurred in this window (490 graded, spike rate 0%) — that's a fact
+about the market, not an error," per the tab's own disclosure. True/false alerts are
+0/0 for both the model and the baseline. This is the honest failure mode — the tab
+correctly refuses to compute precision/recall on zero positives — but it also means
+**the live pipeline has not shown a single correctly-graded true positive in this
+session**, and that has now been true across multiple independent runs, not just a
+quiet 15-minute window.*
+
+**This is not yet root-caused for the current session.** Do not read the 2026-08-10
+fix as closing this — it closed one specific bug (inverted ranking), and a different
+or recurring problem reintroduced the same symptom the very next day.
+
+### The deployed benchmark and the best model ever found are two different models
+
+![Tournament tab, captured live](docs/screenshots/tournament.png)
+
+- The **deployed** model's only documented benchmark (PR-AUC 0.1459 vs. 0.1340
+  baseline) comes from a 65-hour capture from April — the same numbers the
+  Performance tab still cites as "Training (test)" and "Training (val)" today.
+- The **best model the tournament has ever found** — `linear-trial-linear-0025-sgd_logistic`,
+  visible at the top of the leaderboard above — scored PR-AUC **0.2974** on 11 days of
+  data. It was never promoted to Staging or Production. Nothing in this repo currently
+  serves it.
+- Neither number comes from a real held-out evaluation on enough data to trust: the
+  11-day corpus is below the project's own 30-day qualification bar
+  (`qualification_data=false`), and the deployed model's 65-hour capture is smaller
+  still.
+- A 35-day corpus that **does** clear the 30-day bar is already acquired
+  (`rrpichardo/btcspiker-coinbase-history` on Hugging Face, coverage-verified), but as
+  of this write-up it has not been materialized into features or run through the
+  tournament. See [`PLAN.md`](PLAN.md) for the plan to close this.
+
+### Net effect
+
+Three different sessions have independently declared a fix for prediction quality
+(PRs #6, #7, #8/#9) and the live tab has independently regressed to ~0% grading each
+time. Until the 35-day corpus is materialized, tournamented, and the resulting
+candidate is qualified through a real sealed holdout, **treat every PR-AUC number in
+this repo as provisional** — including the ones in this README's own tables below.
+
 ## Canonical startup
 
 ### Environment
@@ -213,6 +278,7 @@ config.yaml           Featurizer config
 ## Documentation
 | Doc | Purpose |
 |---|---|
+| [Known issues](#known-issues-as-of-2026-08-27) (this file) | Live-captured evidence that prediction-quality fixes have not held, and why every PR-AUC number here is provisional |
 | [`docs/results.md`](docs/results.md) | Single-page scorecard: latency, success rate, PR-AUC vs baseline, rollback proof |
 | [`docs/slo.md`](docs/slo.md) | Service Level Objectives + error budgets |
 | [`docs/latency_report.md`](docs/latency_report.md) | Load-test methodology and percentiles |
